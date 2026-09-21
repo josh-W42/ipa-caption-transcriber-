@@ -6,7 +6,8 @@ last two.
 
 No audio leaves your machine. There is no server.
 
-**Status: M1 complete.** English captions work end to end. IPA arrives in M2 and M3.
+**Status: M2 complete.** English captions with canonical `/phonemic/` IPA beneath each
+word. The `[phonetic]` track — what you actually said — arrives in M3.
 
 ## Why two transcription tracks
 
@@ -32,6 +33,7 @@ is what the analysis layer measures.
 mic -> AudioWorklet (16kHz mono) -> ring buffer
          |
          +--> ASR worker      : Whisper           -> words          [M1]
+         |      + CMUdict lexicon -> /phonemic/ IPA                  [M2]
          +--> Phoneme worker  : wav2vec2 CTC      -> phones + timings [M3]
          +--> DSP worker      : LPC formants, YIN pitch              [M5]
                                        |
@@ -61,6 +63,28 @@ npm test
 Tests run in headless Chromium via Vitest browser mode — Web Audio and WebGPU do not
 exist in jsdom, so a real browser is not optional here.
 
+## The phonemic track, and what it is not
+
+The IPA under each word is the **dictionary's** pronunciation, in General American. It
+is not yours. That is the entire point: M3 adds what was actually said, and M4 measures
+the gap between them.
+
+Specifically:
+
+- **One pronunciation per word.** CMUdict lists alternates; this shows the first.
+- **General American.** Speakers of other varieties will see a reference that does not
+  match them, which is a limitation to state rather than to paper over.
+- **Out-of-vocabulary words show `—`, never a guess.** A synthesised pronunciation would
+  be indistinguishable from a real entry and would silently corrupt every divergence
+  measurement made against this track.
+- **The `/slashes/` are notation.** They mark a phonemic transcription; M3's phonetic
+  line uses `[square brackets]`.
+
+Pronunciation data from [CMUdict](https://github.com/cmusphinx/cmudict), Copyright (C)
+1993-2015 Carnegie Mellon University, redistributed under its BSD-style licence — see
+[`public/LEXICON-LICENSE.txt`](public/LEXICON-LICENSE.txt). The lexicon ships as 126,052
+entries, 0.87 MB gzipped.
+
 ## Notable engineering decisions
 
 **The phoneme model is loaded with `AutoModelForCTC`, not `pipeline()`.** The ONNX repos
@@ -73,6 +97,21 @@ faster. Re-measuring with a discarded warmup and median of five showed that gap 
 entirely shader compilation — steady state they are tied (0.071 s vs 0.068 s), while
 q4f16 loads 76x faster warm. The accuracy difference is 5.8% edit distance concentrated
 entirely on the `ɑː`/`ɔː` contrast, which is merged for many North American speakers.
+
+**Two Whisper models, not one.** Benchmarked on real hardware at a 5s window, median of
+three with the warmup discarded: tiny.en runs 1.20s for 40.8MB, base.en runs 2.54s for
+76.9MB. So tiny.en drives the live pass and base.en the refined pass on stop — which is
+what "live rough, refined on stop" always implied, and which a single model never
+delivered. tiny.en loads first, so captions start after ~41MB instead of ~77MB.
+
+**The interim window stays at 5 seconds.** Shorter is faster but truncates mid-phrase:
+at 2-3s a full sentence degrades to "Saturday." Latency was bought with a smaller model
+instead.
+
+**Stress marks are placed by syllable, not by vowel.** IPA puts the mark before the
+syllable, and CMUdict provides no syllable boundaries, so the app syllabifies by maximum
+onset constrained to clusters English actually permits — "secret" is si.kɹət because
+/kɹ/ is a legal onset, "napkin" is næp.kɪn because /pk/ is not.
 
 **No cross-origin isolation.** WebGPU does not require it, so there are no COOP/COEP
 headers and no `SharedArrayBuffer`. Workers exchange transferable `ArrayBuffer`s.
@@ -87,10 +126,15 @@ build — so offloading it would make the whole app depend on a third party's up
 - **It describes; it does not grade.** Scoring pronunciation would mean measuring
   divergence from one dialect's dictionary and calling it correctness.
 - Requires WebGPU for good performance; falls back to WASM, much more slowly.
-- First load downloads ~250 MB of model weights, then caches.
+- First load downloads ~41 MB before captions start, then ~77 MB more in the
+  background for the refined pass. M3 adds a further ~197 MB for the phoneme model.
+- Audio capture depends on a working microphone, which is less of a given than it
+  sounds. The **Diagnose microphone** button records through a second, independent path
+  and reports whether the device itself is dropping audio.
 
 ## Documents
 
 - [Design](docs/plans/2026-09-20-ipa-captions-design.md)
 - [M0 spike findings](docs/findings/2026-09-20-m0-spike-findings.md)
 - [M1 plan](docs/plans/2026-09-20-m1-live-captions.md)
+- [M2 plan](docs/plans/2026-09-21-m2-phonemic-track.md)
