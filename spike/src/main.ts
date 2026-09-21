@@ -3,6 +3,7 @@ import { decodeTo16kMono, describe } from './audio';
 import { probeIsolation } from './probe-isolation';
 import { probeWhisper } from './probe-whisper';
 import { probePhoneme, sweepQuantization } from './probe-phoneme';
+import { probeCtc } from './probe-ctc';
 
 const FIXTURE = '/fixture.wav';
 
@@ -43,11 +44,18 @@ async function main() {
   );
   if (!ok) return;
 
-  // R3 — Whisper and word-level timestamps.
-  await probeWhisper(audio);
+  // R3 — Whisper and word-level timestamps. Never let this block the gate.
+  try {
+    await probeWhisper(audio);
+  } catch (err) {
+    report('R3', 'fail', `${err}\nContinuing to the R1 gate regardless.`);
+  }
 
-  // R1 — the gate.
-  const phoneme = await probePhoneme(audio);
+  // R1 — the gate. Try the pipeline path first, then the direct-CTC path.
+  // The pipeline path is expected to fail on these repos (no tokenizer.json);
+  // we run it anyway so the findings record why.
+  const viaPipeline = await probePhoneme(audio);
+  const phoneme = viaPipeline ?? (await probeCtc(audio));
 
   if (phoneme && RUN_SWEEP) {
     await sweepQuantization(audio, phoneme.model);
