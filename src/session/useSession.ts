@@ -63,6 +63,7 @@ export function useSession() {
       client.onProgress = setProgress;
       asr.current = client;
       const info = await client.load();
+      log(`model ready on ${info.device} in ${info.loadSeconds.toFixed(1)}s`);
       setDevice(info.device);
       setProgress(null);
       setStatus('ready');
@@ -214,13 +215,18 @@ export function useSession() {
     setStatus('finalizing');
     try {
       const audio = await decodeTo16kMono('/sample.wav');
-      const { text } = await asr.current.transcribe(audio);
+      log(
+        `sample: ${(audio.length / TARGET_SAMPLE_RATE).toFixed(2)}s ` +
+          `speechRms=${maxFrameRms(audio).toFixed(5)} meanRms=${rms(audio).toFixed(5)}`,
+      );
+      const { text, seconds } = await asr.current.transcribe(audio);
+      log(`sample result in ${seconds.toFixed(2)}s: "${text}"`);
       setFinal(text);
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     }
     setStatus('ready');
-  }, [load]);
+  }, [load, log]);
 
   const exportRecording = useCallback(() => {
     const rec = lastRecording.current;
