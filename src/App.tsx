@@ -61,6 +61,9 @@ export default function App() {
         <button onClick={s.probeMic} disabled={busy || recording}>
           Diagnose microphone
         </button>
+        <button onClick={s.runBenchmark} disabled={busy || recording}>
+          Benchmark ASR
+        </button>
 
         <label className="cfg">
           capture

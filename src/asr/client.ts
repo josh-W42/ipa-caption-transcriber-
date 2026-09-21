@@ -57,12 +57,12 @@ export class AsrClient {
     }
   }
 
-  load(): Promise<ReadyInfo> {
+  load(model?: string): Promise<ReadyInfo> {
     const p = new Promise<ReadyInfo>((resolve, reject) => {
       this.readyResolve = resolve;
       this.readyReject = reject;
     });
-    this.worker.postMessage({ type: 'load' });
+    this.worker.postMessage({ type: 'load', model });
     return p;
   }
 

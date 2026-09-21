@@ -10,10 +10,10 @@ import { pipeline } from '@huggingface/transformers';
  *     cross-attentions it requires and throws. See findings R3.
  */
 
-const MODEL = 'onnx-community/whisper-base.en';
+const DEFAULT_MODEL = 'onnx-community/whisper-base.en';
 
 export type ToWorker =
-  | { type: 'load' }
+  | { type: 'load'; model?: string }
   | { type: 'transcribe'; id: number; audio: Float32Array }
   | { type: 'dispose' };
 
@@ -28,7 +28,7 @@ let device = 'unknown';
 
 const post = (msg: FromWorker) => (self as unknown as Worker).postMessage(msg);
 
-async function load() {
+async function load(model: string = DEFAULT_MODEL) {
   const t0 = performance.now();
 
   const onProgress = (p: any) => {
@@ -38,7 +38,7 @@ async function load() {
   };
 
   try {
-    transcriber = await pipeline('automatic-speech-recognition', MODEL, {
+    transcriber = await pipeline('automatic-speech-recognition', model, {
       device: 'webgpu',
       dtype: 'q8',
       progress_callback: onProgress,
@@ -46,7 +46,7 @@ async function load() {
     device = 'webgpu';
   } catch {
     // WASM is slower but keeps the app usable on machines without WebGPU.
-    transcriber = await pipeline('automatic-speech-recognition', MODEL, {
+    transcriber = await pipeline('automatic-speech-recognition', model, {
       dtype: 'q8',
       progress_callback: onProgress,
     });
@@ -64,7 +64,7 @@ self.onmessage = async (e: MessageEvent<ToWorker>) => {
   const msg = e.data;
   try {
     if (msg.type === 'load') {
-      await load();
+      await load(msg.model);
     } else if (msg.type === 'transcribe') {
       if (!transcriber) throw new Error('transcribe before load');
       const t0 = performance.now();

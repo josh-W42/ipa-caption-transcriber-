@@ -18,9 +18,30 @@ import { downloadWav } from '../audio/wav';
 import { resampleTo16k } from '../audio/resample';
 import { probeMediaRecorder, formatProbe, verdict } from '../audio/micProbe';
 import { Lexicon } from '../phonemic/lexicon';
+import { benchmarkAsr } from '../asr/benchmark';
 
-/** Trailing window handed to Whisper for each interim pass. */
+/**
+ * Trailing window handed to Whisper for each interim pass.
+ *
+ * Benchmarked against 2s, 3s, 5s and 8s: shorter windows are faster but truncate
+ * mid-phrase, degrading a full sentence to "Saturday." Five seconds is where the
+ * interim text stays coherent, and the speed is bought with a smaller model instead.
+ */
 const WINDOW_SECONDS = 5;
+
+/**
+ * Two models, which is what "live rough, refined on stop" actually requires.
+ *
+ * Benchmarked on this hardware, 5s window, median of 3 with warmup discarded:
+ *   tiny.en  1.20s  40.8MB   -- fast enough to feel live
+ *   base.en  2.54s  76.9MB   -- twice the cost, better on hard audio
+ *
+ * The live model loads first so captions start after ~41MB rather than ~77MB, and
+ * the refined model downloads in the background afterwards. If it has not arrived by
+ * the time recording stops, the refined pass falls back to the live model.
+ */
+const LIVE_MODEL = 'onnx-community/whisper-tiny.en';
+const REFINED_MODEL = 'onnx-community/whisper-base.en';
 /**
  * Pause between interim passes.
  *
@@ -52,6 +73,7 @@ export function useSession() {
   }, []);
 
   const asr = useRef<AsrClient | null>(null);
+  const asrRefined = useRef<AsrClient | null>(null);
   // Sized for the highest plausible device rate, since capture is now at native rate.
   const ring = useRef(new RingBuffer(48000 * WINDOW_SECONDS));
   const captureRate = useRef(TARGET_SAMPLE_RATE);
@@ -68,6 +90,7 @@ export function useSession() {
       stopping.current = true;
       void capture.current?.stop();
       asr.current?.dispose();
+      asrRefined.current?.dispose();
     };
   }, []);
 
@@ -92,9 +115,22 @@ export function useSession() {
           log(`lexicon FAILED (captions will run without IPA): ${err}`);
         });
 
-      const info = await client.load();
-      log(`model ready on ${info.device} in ${info.loadSeconds.toFixed(1)}s`);
+      const info = await client.load(LIVE_MODEL);
+      log(`live model (tiny.en) ready on ${info.device} in ${info.loadSeconds.toFixed(1)}s`);
       await lexiconPromise;
+
+      // Background: the bigger model for the refined pass. Deliberately not awaited —
+      // captions must not wait on a download only needed when recording stops.
+      const refined = new AsrClient();
+      refined
+        .load(REFINED_MODEL)
+        .then((r) => {
+          asrRefined.current = refined;
+          log(`refined model (base.en) ready on ${r.device} in ${r.loadSeconds.toFixed(1)}s`);
+        })
+        .catch((err) => {
+          log(`refined model failed, will reuse the live model on stop: ${err}`);
+        });
       setDevice(info.device);
       setProgress(null);
       setStatus('ready');
@@ -257,8 +293,10 @@ export function useSession() {
     );
 
     try {
-      const { text } = await asr.current!.transcribe(full);
-      log(`refined result: "${text}"`);
+      const engine = asrRefined.current ?? asr.current!;
+      const which = asrRefined.current ? 'base.en' : 'tiny.en (refined model not ready)';
+      const { text, seconds } = await engine.transcribe(full);
+      log(`refined result via ${which} in ${seconds.toFixed(2)}s: "${text}"`);
       setFinal(text);
       setInterim('');
       interimRef.current = '';
@@ -282,7 +320,8 @@ export function useSession() {
         `sample: ${(audio.length / TARGET_SAMPLE_RATE).toFixed(2)}s ` +
           `speechRms=${maxFrameRms(audio).toFixed(5)} meanRms=${rms(audio).toFixed(5)}`,
       );
-      const { text, seconds } = await asr.current.transcribe(audio);
+      const engine = asrRefined.current ?? asr.current;
+      const { text, seconds } = await engine.transcribe(audio);
       log(`sample result in ${seconds.toFixed(2)}s: "${text}"`);
       setFinal(text);
     } catch (err) {
@@ -325,6 +364,18 @@ export function useSession() {
     setStatus('ready');
   }, [log]);
 
+  const runBenchmark = useCallback(async () => {
+    setStatus('finalizing');
+    try {
+      log('--- ASR benchmark: median of 3, warmup discarded ---');
+      await benchmarkAsr(log);
+      log('--- benchmark complete ---');
+    } catch (err) {
+      log(`benchmark failed — ${err instanceof Error ? err.message : String(err)}`);
+    }
+    setStatus('ready');
+  }, [log]);
+
   const setConfig = useCallback(
     (k: string) => {
       if (k in CAPTURE_CONFIGS) {
@@ -338,6 +389,6 @@ export function useSession() {
   return {
     status, progress, device, interim, final, level, error, diagnostics, lexicon,
     hasRecording: lastRecording.current !== null,
-    load, start, stop, loadSample, exportRecording, setConfig, probeMic,
+    load, start, stop, loadSample, exportRecording, setConfig, probeMic, runBenchmark,
   };
 }
