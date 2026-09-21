@@ -11,6 +11,7 @@ import {
 } from '../audio/capture';
 import { decodeTo16kMono } from '../audio/decode';
 import { stitch } from '../transcript/stitch';
+import { downloadWav } from '../audio/wav';
 
 /** Trailing window handed to Whisper for each interim pass. */
 const WINDOW_SECONDS = 5;
@@ -43,6 +44,7 @@ export function useSession() {
   const timer = useRef<ReturnType<typeof setInterval> | null>(null);
   const inFlight = useRef(false);
   const interimRef = useRef('');
+  const lastRecording = useRef<Float32Array | null>(null);
 
   useEffect(() => {
     return () => {
@@ -182,6 +184,9 @@ export function useSession() {
       full.set(frame, offset);
       offset += frame.length;
     }
+    // Kept so it can be exported and listened to: when the model disagrees with the
+    // loudness statistics, the bytes are the only arbiter.
+    lastRecording.current = full.slice(0);
     log(
       `refined pass over ${(total / TARGET_SAMPLE_RATE).toFixed(2)}s — ` +
         `speechRms=${maxFrameRms(full).toFixed(5)} meanRms=${rms(full).toFixed(5)}`,
@@ -217,8 +222,16 @@ export function useSession() {
     setStatus('ready');
   }, [load]);
 
+  const exportRecording = useCallback(() => {
+    const rec = lastRecording.current;
+    if (!rec) return;
+    downloadWav(rec, `ipa-captions-mic-${Date.now()}.wav`);
+    log(`exported ${(rec.length / TARGET_SAMPLE_RATE).toFixed(2)}s of captured audio`);
+  }, [log]);
+
   return {
     status, progress, device, interim, final, level, error, diagnostics,
-    load, start, stop, loadSample,
+    hasRecording: lastRecording.current !== null,
+    load, start, stop, loadSample, exportRecording,
   };
 }

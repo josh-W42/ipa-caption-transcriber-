@@ -50,6 +50,11 @@ export default function App() {
         <button onClick={s.loadSample} disabled={busy || recording}>
           Use sample audio
         </button>
+        {s.final !== null && s.status === 'ready' && (
+          <button onClick={s.exportRecording} disabled={recording}>
+            Download last recording
+          </button>
+        )}
         {s.device && <span className="badge">{s.device}</span>}
       </div>
 
