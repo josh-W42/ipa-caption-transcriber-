@@ -6,8 +6,9 @@ last two.
 
 No audio leaves your machine. There is no server.
 
-**Status: M2 complete.** English captions with canonical `/phonemic/` IPA beneath each
-word. The `[phonetic]` track — what you actually said — arrives in M3.
+**Status: M3 complete.** Three caption rows — English, the dictionary's `/phonemic/`
+IPA, and the `[phonetic]` IPA of what was actually said — with the divergences between
+the last two marked inline. Analysis of those divergences arrives in M4.
 
 ## Why two transcription tracks
 
@@ -35,6 +36,7 @@ mic -> AudioWorklet (16kHz mono) -> ring buffer
          +--> ASR worker      : Whisper           -> words          [M1]
          |      + CMUdict lexicon -> /phonemic/ IPA                  [M2]
          +--> Phoneme worker  : wav2vec2 CTC      -> phones + timings [M3]
+         |      + feature-weighted alignment -> divergences            [M3]
          +--> DSP worker      : LPC formants, YIN pitch              [M5]
                                        |
                               alignment + analysis
@@ -85,6 +87,32 @@ Pronunciation data from [CMUdict](https://github.com/cmusphinx/cmudict), Copyrig
 [`public/LEXICON-LICENSE.txt`](public/LEXICON-LICENSE.txt). The lexicon ships as 126,052
 entries, 0.87 MB gzipped.
 
+## The alignment, and what it is not
+
+The two rows are compared with Needleman-Wunsch whose substitution cost is the distance
+between **distinctive feature vectors**, not plain edit distance. Plain edit distance
+would score /t/ → [ɾ] exactly as badly as /t/ → [i], so an ordinary flapped "butter"
+would look as divergent as noise.
+
+On the fixture sentence that yields 36 matches, 10 substitutions and zero insertions or
+deletions. Every substitution is a real phenomenon: five flaps, the cot/caught merger
+firing in both directions (`water` → [wɑɾɚ], `on` → [ɔn]), an unreduced "and", and the
+Saturd-**ay** against Saturd-**ee** variant.
+
+Caveats worth stating:
+
+- **The feature table is hand-authored.** It encodes one analyst's judgements, not a
+  learned or corpus-derived metric.
+- **The phonetic model is multilingual espeak**, not English-specific, so it can emit
+  symbols outside the General American inventory.
+- **The two tracks are normalised into a shared inventory first.** They do not share an
+  IPA convention: espeak writes length marks and `ɐ` where CMUdict writes `ə`, and only
+  the phonemic side carries stress marks. Those are stripped as notation. The flap and
+  the vowel differences are preserved, because they are the finding. That line is drawn
+  in `src/align/normalise.ts` and is tested, so nobody later mistakes it for hiding
+  divergences.
+- **Still describing, not grading.**
+
 ## Notable engineering decisions
 
 **The phoneme model is loaded with `AutoModelForCTC`, not `pipeline()`.** The ONNX repos
@@ -113,6 +141,11 @@ syllable, and CMUdict provides no syllable boundaries, so the app syllabifies by
 onset constrained to clusters English actually permits — "secret" is si.kɹət because
 /kɹ/ is a legal onset, "napkin" is næp.kɪn because /pk/ is not.
 
+**The ASR and phoneme models run sequentially, not concurrently.** `Promise.all` looked
+like the obvious optimisation and cost an order of magnitude: 24.68s for the ASR pass
+against 2.74s when awaited in turn, because both workers contend for a single GPU. Run
+sequentially the phonetic pass costs 0.12s for 8s of audio.
+
 **No cross-origin isolation.** WebGPU does not require it, so there are no COOP/COEP
 headers and no `SharedArrayBuffer`. Workers exchange transferable `ArrayBuffer`s.
 
@@ -126,8 +159,9 @@ build — so offloading it would make the whole app depend on a third party's up
 - **It describes; it does not grade.** Scoring pronunciation would mean measuring
   divergence from one dialect's dictionary and calling it correctness.
 - Requires WebGPU for good performance; falls back to WASM, much more slowly.
-- First load downloads ~41 MB before captions start, then ~77 MB more in the
-  background for the refined pass. M3 adds a further ~197 MB for the phoneme model.
+- First load downloads ~41 MB before captions start, then ~77 MB for the refined pass
+  and ~197 MB for the phoneme model, both in the background. Until the phoneme model
+  arrives the app shows two rows rather than three.
 - Audio capture depends on a working microphone, which is less of a given than it
   sounds. The **Diagnose microphone** button records through a second, independent path
   and reports whether the device itself is dropping audio.
@@ -138,3 +172,4 @@ build — so offloading it would make the whole app depend on a third party's up
 - [M0 spike findings](docs/findings/2026-09-20-m0-spike-findings.md)
 - [M1 plan](docs/plans/2026-09-20-m1-live-captions.md)
 - [M2 plan](docs/plans/2026-09-21-m2-phonemic-track.md)
+- [M3 plan](docs/plans/2026-09-21-m3-phonetic-track.md)
