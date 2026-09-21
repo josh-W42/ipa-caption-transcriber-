@@ -20,8 +20,15 @@ import { probeMediaRecorder, formatProbe, verdict } from '../audio/micProbe';
 
 /** Trailing window handed to Whisper for each interim pass. */
 const WINDOW_SECONDS = 5;
-/** How often an interim pass runs. Inference is ~70-300ms, so this is not tight. */
-const TICK_MS = 1500;
+/**
+ * Pause between interim passes.
+ *
+ * This is a gap between passes, not a fixed interval: the loop waits, runs a pass to
+ * completion, then waits again. A fixed 1500ms interval skipped every other tick,
+ * because inference on a 5s window measured 2-3s — half the timers fired into a busy
+ * pass and were discarded. Self-pacing removes the wasted wakeups and the log noise.
+ */
+const TICK_MS = 800;
 
 export type Status = 'idle' | 'loading' | 'ready' | 'recording' | 'finalizing' | 'error';
 
@@ -48,7 +55,7 @@ export function useSession() {
   const captureRate = useRef(TARGET_SAMPLE_RATE);
   const recording = useRef<Float32Array[]>([]);
   const capture = useRef<Capture | null>(null);
-  const timer = useRef<ReturnType<typeof setInterval> | null>(null);
+  const stopping = useRef(false);
   const inFlight = useRef(false);
   const interimRef = useRef('');
   const lastRecording = useRef<Float32Array | null>(null);
@@ -56,7 +63,7 @@ export function useSession() {
 
   useEffect(() => {
     return () => {
-      if (timer.current) clearInterval(timer.current);
+      stopping.current = true;
       void capture.current?.stop();
       asr.current?.dispose();
     };
@@ -86,10 +93,7 @@ export function useSession() {
   const tick = useCallback(async () => {
     // Skip rather than queue. A queue under sustained load grows without bound and
     // the captions fall progressively further behind — worse than a dropped update.
-    if (inFlight.current || !asr.current) {
-      if (inFlight.current) log('tick skipped — previous pass still in flight');
-      return;
-    }
+    if (inFlight.current || !asr.current) return;
 
     const raw = ring.current.readLast(captureRate.current * WINDOW_SECONDS);
     const drops = dropoutRatio(raw);
@@ -148,7 +152,17 @@ export function useSession() {
       captureRate.current = capture.current.sampleRate;
       log(`capture running at ${captureRate.current}Hz (resampling to ${TARGET_SAMPLE_RATE}Hz offline)`);
       setStatus('recording');
-      timer.current = globalThis.setInterval(tick, TICK_MS);
+
+      // Self-pacing: wait, run a pass to completion, wait again. Never queues, and
+      // never fires a timer into a pass that is still running.
+      stopping.current = false;
+      void (async () => {
+        while (!stopping.current) {
+          await new Promise((r) => setTimeout(r, TICK_MS));
+          if (stopping.current) break;
+          await tick();
+        }
+      })();
 
       // If the worklet never runs, everything downstream looks like a dead mic.
       // Surface that distinctly rather than letting it read as silence.
@@ -175,10 +189,16 @@ export function useSession() {
   }, [load, tick, log]);
 
   const stop = useCallback(async () => {
-    if (timer.current) {
-      clearInterval(timer.current);
-      timer.current = null;
+    stopping.current = true;
+
+    // Let any in-flight interim pass finish before the refined pass starts. The
+    // pipeline is not reentrant, and previously a late tick and the refined pass
+    // called transcribe() concurrently — the tick's result arrived after the refined
+    // one and overwrote it.
+    for (let i = 0; i < 100 && inFlight.current; i++) {
+      await new Promise((r) => setTimeout(r, 50));
     }
+
     await capture.current?.stop();
     capture.current = null;
     setLevel(0);
@@ -276,10 +296,11 @@ export function useSession() {
         log(formatProbe(r));
         log(
           verdict(r).healthy
-            ? 'MediaRecorder is CLEAN -> the fault is in the Web Audio capture graph.'
-            : 'MediaRecorder is ALSO BROKEN -> the fault is upstream of the browser: ' +
-              'the audio device, its driver, or another app holding the microphone. ' +
-              'No amount of Web Audio code will fix this.',
+            ? 'Microphone is healthy at the source. If live captions are still wrong, ' +
+              'the fault is in the Web Audio capture path rather than the device.'
+            : 'Microphone is BROKEN at the source, before any of this code touches it: ' +
+              'the device, its driver, or another app holding it. Test it outside the ' +
+              'browser — no Web Audio change will fix this.',
         );
       }
     } catch (err) {
