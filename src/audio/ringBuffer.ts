@@ -6,12 +6,14 @@
  * buffer.
  */
 export class RingBuffer {
+  readonly capacity: number;
   private buf: Float32Array;
   private writeIdx = 0;
   private filled = 0;
 
-  constructor(public readonly capacity: number) {
+  constructor(capacity: number) {
     if (capacity <= 0) throw new RangeError('capacity must be positive');
+    this.capacity = capacity;
     this.buf = new Float32Array(capacity);
   }
 

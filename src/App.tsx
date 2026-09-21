@@ -1,122 +1,85 @@
-import { useState } from 'react'
-import heroImg from './assets/hero.png'
-import reactLogo from './assets/react.svg'
-import viteLogo from './assets/vite.svg'
-import './App.css'
+import { useSession } from './session/useSession';
+import './App.css';
 
-function App() {
-  const [count, setCount] = useState(0)
+export default function App() {
+  const s = useSession();
+  const busy = s.status === 'loading' || s.status === 'finalizing';
+  const recording = s.status === 'recording';
 
   return (
-    <>
-      <section id="center">
-        <div className="hero">
-          <img src={heroImg} className="base" width="170" height="179" alt="" />
-          <img src={reactLogo} className="framework" alt="React logo" />
-          <img src={viteLogo} className="vite" alt="Vite logo" />
-        </div>
-        <div>
-          <h1>Get started</h1>
-          <p>
-            Edit <code>src/App.tsx</code> and save to test <code>HMR</code>
+    <main className="app">
+      <header>
+        <h1>Live IPA Captions</h1>
+        <p className="sub">
+          Speech to English, phonemic IPA and phonetic IPA — entirely in your browser.
+          <strong> M1: English captions only.</strong>
+        </p>
+      </header>
+
+      {s.status === 'loading' && (
+        <div className="panel">
+          <div className="row">
+            <span>Downloading speech model…</span>
+            <span className="mono">{s.progress ? `${s.progress.progress.toFixed(0)}%` : ''}</span>
+          </div>
+          <div className="bar">
+            <div className="fill" style={{ width: `${s.progress?.progress ?? 0}%` }} />
+          </div>
+          <p className="hint">
+            {s.progress?.file ?? 'Fetching…'} — this happens once, then it is cached.
           </p>
         </div>
-        <button
-          type="button"
-          className="counter"
-          onClick={() => setCount((count) => count + 1)}
-        >
-          Count is {count}
+      )}
+
+      {s.error && (
+        <div className="panel error">
+          <strong>{s.error}</strong>
+        </div>
+      )}
+
+      <div className="controls">
+        {!recording ? (
+          <button className="primary" onClick={s.start} disabled={busy}>
+            {s.status === 'idle' ? 'Start (downloads model)' : 'Start recording'}
+          </button>
+        ) : (
+          <button className="stop" onClick={s.stop}>
+            Stop
+          </button>
+        )}
+        <button onClick={s.loadSample} disabled={busy || recording}>
+          Use sample audio
         </button>
+        {s.device && <span className="badge">{s.device}</span>}
+      </div>
+
+      {recording && (
+        <div className="meter" aria-label="input level">
+          <div className="meter-fill" style={{ width: `${Math.min(100, s.level * 1200)}%` }} />
+        </div>
+      )}
+
+      <section className="captions">
+        {s.final && <p className="final">{s.final}</p>}
+        {s.interim && <p className="interim">{s.interim}</p>}
+
+        {!s.final && !s.interim && (
+          <p className="idle">
+            {recording
+              ? 'Listening…'
+              : s.status === 'finalizing'
+                ? 'Transcribing…'
+                : 'Press start, or try the sample audio.'}
+          </p>
+        )}
       </section>
 
-      <div className="ticks"></div>
-
-      <section id="next-steps">
-        <div id="docs">
-          <svg className="icon" role="presentation" aria-hidden="true">
-            <use href="/icons.svg#documentation-icon"></use>
-          </svg>
-          <h2>Documentation</h2>
-          <p>Your questions, answered</p>
-          <ul>
-            <li>
-              <a href="https://vite.dev/" target="_blank">
-                <img className="logo" src={viteLogo} alt="" />
-                Explore Vite
-              </a>
-            </li>
-            <li>
-              <a href="https://react.dev/" target="_blank">
-                <img className="button-icon" src={reactLogo} alt="" />
-                Learn more
-              </a>
-            </li>
-          </ul>
-        </div>
-        <div id="social">
-          <svg className="icon" role="presentation" aria-hidden="true">
-            <use href="/icons.svg#social-icon"></use>
-          </svg>
-          <h2>Connect with us</h2>
-          <p>Join the Vite community</p>
-          <ul>
-            <li>
-              <a href="https://github.com/vitejs/vite" target="_blank">
-                <svg
-                  className="button-icon"
-                  role="presentation"
-                  aria-hidden="true"
-                >
-                  <use href="/icons.svg#github-icon"></use>
-                </svg>
-                GitHub
-              </a>
-            </li>
-            <li>
-              <a href="https://chat.vite.dev/" target="_blank">
-                <svg
-                  className="button-icon"
-                  role="presentation"
-                  aria-hidden="true"
-                >
-                  <use href="/icons.svg#discord-icon"></use>
-                </svg>
-                Discord
-              </a>
-            </li>
-            <li>
-              <a href="https://x.com/vite_js" target="_blank">
-                <svg
-                  className="button-icon"
-                  role="presentation"
-                  aria-hidden="true"
-                >
-                  <use href="/icons.svg#x-icon"></use>
-                </svg>
-                X.com
-              </a>
-            </li>
-            <li>
-              <a href="https://bsky.app/profile/vite.dev" target="_blank">
-                <svg
-                  className="button-icon"
-                  role="presentation"
-                  aria-hidden="true"
-                >
-                  <use href="/icons.svg#bluesky-icon"></use>
-                </svg>
-                Bluesky
-              </a>
-            </li>
-          </ul>
-        </div>
-      </section>
-
-      <div className="ticks"></div>
-      <section id="spacer"></section>
-    </>
-  )
+      <footer>
+        <p className="hint">
+          Interim text is shown dimmed while you speak. On stop, the whole recording is
+          re-transcribed in one pass — more accurate than any 5-second window.
+        </p>
+      </footer>
+    </main>
+  );
 }
-
-export default App
