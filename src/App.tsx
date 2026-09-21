@@ -1,6 +1,7 @@
 import { useSession } from './session/useSession';
 import { PhonemicLine } from './components/PhonemicLine';
 import { AlignedCaptions } from './components/AlignedCaptions';
+import { ReferencePanel } from './components/ReferencePanel';
 import './App.css';
 
 export default function App() {
@@ -104,6 +105,8 @@ export default function App() {
           </p>
         )}
       </section>
+
+      {s.aligned && <ReferencePanel words={s.aligned} />}
 
       <footer>
         <p className="hint">
