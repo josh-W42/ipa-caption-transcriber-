@@ -24,3 +24,4 @@ lerna-debug.log*
 *.sln
 *.sw?
 scripts/cmudict.dict
+scripts/en_50k.txt
