@@ -6,9 +6,10 @@ last two.
 
 No audio leaves your machine. There is no server.
 
-**Status: M3 complete.** Three caption rows — English, the dictionary's `/phonemic/`
-IPA, and the `[phonetic]` IPA of what was actually said — with the divergences between
-the last two marked inline. Analysis of those divergences arrives in M4.
+**Status: M4 complete.** Three caption rows — English, the dictionary's `/phonemic/`
+IPA, and the `[phonetic]` IPA of what was actually said — plus segmental analysis of the
+divergences: named phonological processes, an IPA chart shaded by use, comparison against
+conversational English, and a confusion matrix. Prosody and formants arrive in M5.
 
 ## Why two transcription tracks
 
@@ -37,6 +38,7 @@ mic -> AudioWorklet (16kHz mono) -> ring buffer
          |      + CMUdict lexicon -> /phonemic/ IPA                  [M2]
          +--> Phoneme worker  : wav2vec2 CTC      -> phones + timings [M3]
          |      + feature-weighted alignment -> divergences            [M3]
+         |      + processes, IPA chart, confusion matrix                [M4]
          +--> DSP worker      : LPC formants, YIN pitch              [M5]
                                        |
                               alignment + analysis
@@ -113,6 +115,32 @@ Caveats worth stating:
   divergences.
 - **Still describing, not grading.**
 
+## The analysis, and what it refuses to do
+
+On the fixture sentence: 46 phones, 22 distinct, 21.7% divergence, and three named
+processes — flapping (5: little, butter, water, city, Saturday), the cot–caught merger
+(2: water, on), and one unreduced vowel.
+
+Three refusals are deliberate, and they are the part worth reading the code for:
+
+- **It will not claim absence from a short sample.** A twelve-word utterance is missing
+  most of the phoneme inventory. "You never use /ʒ/" on that evidence is a claim the
+  data cannot support, so every phone carries a sufficiency flag and unsupported figures
+  are suppressed rather than rounded.
+- **It will not call one occurrence a pattern.** A single instance is an observation;
+  calling it a property of the speaker needs repetition, and the two are labelled
+  differently.
+- **It reports divergences no rule explained.** An unexplained difference is more
+  interesting than a named one, and hiding it would make the rule set look more complete
+  than it is.
+
+Process detection uses **authored rules**, not learned patterns — absence means no rule
+matched, not that it did not happen. The baseline is conversational English from
+subtitles ([hermitdave/FrequencyWords](https://github.com/hermitdave/FrequencyWords),
+MIT — see [`public/BASELINE-LICENSE.txt`](public/BASELINE-LICENSE.txt)), covering 96% of
+tokens over 41 phones. Divergence from it is description, not error: a different dialect
+diverges more and is not worse.
+
 ## Notable engineering decisions
 
 **The phoneme model is loaded with `AutoModelForCTC`, not `pipeline()`.** The ONNX repos
@@ -146,6 +174,11 @@ like the obvious optimisation and cost an order of magnitude: 24.68s for the ASR
 against 2.74s when awaited in turn, because both workers contend for a single GPU. Run
 sequentially the phonetic pass costs 0.12s for 8s of audio.
 
+**The frequency baseline is built from the shipped lexicon**, not from a fresh CMUdict
+parse, so it cannot drift from the pronunciations the app actually uses. The build
+refuses to write below 90% token coverage rather than shipping a baseline that has
+quietly stopped being representative.
+
 **No cross-origin isolation.** WebGPU does not require it, so there are no COOP/COEP
 headers and no `SharedArrayBuffer`. Workers exchange transferable `ArrayBuffer`s.
 
@@ -173,3 +206,4 @@ build — so offloading it would make the whole app depend on a third party's up
 - [M1 plan](docs/plans/2026-09-20-m1-live-captions.md)
 - [M2 plan](docs/plans/2026-09-21-m2-phonemic-track.md)
 - [M3 plan](docs/plans/2026-09-21-m3-phonetic-track.md)
+- [M4 plan](docs/plans/2026-09-21-m4-segmental-analysis.md)
