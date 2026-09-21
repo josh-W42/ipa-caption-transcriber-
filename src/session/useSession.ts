@@ -328,14 +328,31 @@ export function useSession() {
       // together measured 24.6s against 2.2s for the ASR alone -- an 11x penalty from
       // contention. Awaiting each in turn keeps both at their solo speed.
       const audioForPhonetic = full.slice(0);
-      const { text, seconds } = await engine.transcribe(full);
+      const interimWords = interimRef.current.trim().split(/\s+/).filter(Boolean).length;
+
+      // longForm: Whisper's encoder sees 30s at a time, and the refined pass gets the
+      // WHOLE recording. Without chunking it transcribes part of a long buffer and
+      // drops the rest, so stopping showed fewer words than the interim already had.
+      const { text, seconds } = await engine.transcribe(full, true);
       const phoneticResult = phonetic.current
         ? await phonetic.current.transcribe(audioForPhonetic).catch((err) => {
             log(`phonetic pass failed: ${err}`);
             return null;
           })
         : null;
+      const refinedWords = text.trim().split(/\s+/).filter(Boolean).length;
       log(`refined result via ${which} in ${seconds.toFixed(2)}s: "${text}"`);
+      log(`words: interim ${interimWords} -> refined ${refinedWords}`);
+
+      // The refined pass sees more context than any interim window, so it should
+      // never come back with substantially LESS. If it does, content was dropped and
+      // the user is about to lose words they already watched appear.
+      if (interimWords > 0 && refinedWords < interimWords * 0.8) {
+        log(
+          `WARNING: refined pass lost ${interimWords - refinedWords} words vs the ` +
+            `interim transcript — long-form chunking may not be covering this recording`,
+        );
+      }
 
       if (phoneticResult && lexiconRef.current) {
         const words = lexiconRef.current.transcribe(text);
@@ -377,7 +394,7 @@ export function useSession() {
 
       // Sequential for the same reason as stop(): the two workers contend for one GPU.
       const audioForPhonetic = audio.slice(0);
-      const { text, seconds } = await engine.transcribe(audio);
+      const { text, seconds } = await engine.transcribe(audio, true);
       const phoneticResult = phonetic.current
         ? await phonetic.current.transcribe(audioForPhonetic).catch((err) => {
             log(`phonetic pass failed: ${err}`);

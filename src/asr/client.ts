@@ -66,13 +66,18 @@ export class AsrClient {
     return p;
   }
 
-  /** Transfers `audio` — the caller's copy is neutered afterwards. */
-  transcribe(audio: Float32Array): Promise<Result> {
+  /**
+   * Transfers `audio` — the caller's copy is neutered afterwards.
+   *
+   * Set `longForm` for anything that may exceed 30 seconds; without it Whisper
+   * transcribes only part of a longer buffer and drops the rest without error.
+   */
+  transcribe(audio: Float32Array, longForm = false): Promise<Result> {
     const id = this.nextId++;
     const p = new Promise<Result>((resolve, reject) => {
       this.pending.set(id, { resolve, reject });
     });
-    this.worker.postMessage({ type: 'transcribe', id, audio }, [audio.buffer]);
+    this.worker.postMessage({ type: 'transcribe', id, audio, longForm }, [audio.buffer]);
     return p;
   }
 

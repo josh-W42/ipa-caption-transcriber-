@@ -14,7 +14,7 @@ const DEFAULT_MODEL = 'onnx-community/whisper-base.en';
 
 export type ToWorker =
   | { type: 'load'; model?: string }
-  | { type: 'transcribe'; id: number; audio: Float32Array }
+  | { type: 'transcribe'; id: number; audio: Float32Array; longForm?: boolean }
   | { type: 'dispose' };
 
 export type FromWorker =
@@ -68,7 +68,15 @@ self.onmessage = async (e: MessageEvent<ToWorker>) => {
     } else if (msg.type === 'transcribe') {
       if (!transcriber) throw new Error('transcribe before load');
       const t0 = performance.now();
-      const out: any = await transcriber(msg.audio);
+
+      // Whisper's encoder sees 30 seconds at a time. Handed a longer buffer it
+      // silently transcribes only part of it -- a 57s recording came back with 5 of
+      // its 7 sentences. chunk_length_s makes transformers.js window the audio and
+      // stitch the results; stride_length_s overlaps the windows so words spanning a
+      // boundary are not lost.
+      const out: any = msg.longForm
+        ? await transcriber(msg.audio, { chunk_length_s: 30, stride_length_s: 5 })
+        : await transcriber(msg.audio);
       post({
         type: 'result',
         id: msg.id,
