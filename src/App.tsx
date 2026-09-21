@@ -79,6 +79,13 @@ export default function App() {
           Interim text is shown dimmed while you speak. On stop, the whole recording is
           re-transcribed in one pass — more accurate than any 5-second window.
         </p>
+
+        {s.diagnostics.length > 0 && (
+          <details className="diag" open>
+            <summary>Diagnostics ({s.diagnostics.length})</summary>
+            <pre>{s.diagnostics.join('\n')}</pre>
+          </details>
+        )}
       </footer>
     </main>
   );

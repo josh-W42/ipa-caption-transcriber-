@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { TARGET_SAMPLE_RATE, rms } from './capture';
+import { TARGET_SAMPLE_RATE, rms, maxFrameRms, SILENCE_RMS } from './capture';
 
 describe('AudioContext sample rate', () => {
   /**
@@ -41,7 +41,51 @@ describe('rms', () => {
   it('places the M0 fixture above the silence gate', () => {
     // The M0 recording measured 0.0156 RMS while quiet but clearly audible, and
     // transcribed correctly. The gate must sit below that.
-    const SILENCE_GATE = 0.005;
-    expect(0.0156).toBeGreaterThan(SILENCE_GATE);
+    expect(0.0156).toBeGreaterThan(SILENCE_RMS);
+  });
+});
+
+describe('maxFrameRms — the speech gate', () => {
+  /**
+   * Gating a 5-second window on its MEAN rms is the wrong measurement: a window
+   * holding one second of speech and four of silence averages down to near nothing
+   * and gets discarded, which is exactly the "live captions picked up nothing"
+   * symptom. The gate asks whether speech occurs ANYWHERE in the window.
+   */
+  const SR = TARGET_SAMPLE_RATE;
+
+  function windowWithBurst(totalSeconds: number, burstSeconds: number, amplitude: number) {
+    const buf = new Float32Array(SR * totalSeconds);
+    const burst = SR * burstSeconds;
+    for (let i = 0; i < burst; i++) {
+      buf[i] = amplitude * Math.sin((2 * Math.PI * 200 * i) / SR);
+    }
+    return buf;
+  }
+
+  it('is zero for silence', () => {
+    expect(maxFrameRms(new Float32Array(SR * 5))).toBe(0);
+  });
+
+  it('detects a 1s burst inside a 5s window that mean rms would bury', () => {
+    // Amplitude chosen to match the M0 fixture's quiet-but-audible level.
+    const w = windowWithBurst(5, 1, 0.022);
+
+    const mean = rms(w);
+    const peak = maxFrameRms(w);
+
+    // The mean sinks toward the gate; the frame max stays well clear of it.
+    expect(peak).toBeGreaterThan(mean * 1.8);
+    expect(peak).toBeGreaterThan(SILENCE_RMS);
+  });
+
+  it('still rejects a window whose only content is well below the gate', () => {
+    const w = windowWithBurst(5, 1, 0.0005);
+    expect(maxFrameRms(w)).toBeLessThan(SILENCE_RMS);
+  });
+
+  it('handles windows shorter than one frame', () => {
+    const short = Float32Array.from([0.5, -0.5, 0.5, -0.5]);
+    expect(maxFrameRms(short)).toBeCloseTo(0.5, 6);
   });
 });
