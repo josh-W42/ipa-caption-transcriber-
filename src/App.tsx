@@ -2,6 +2,7 @@ import { useSession } from './session/useSession';
 import { PhonemicLine } from './components/PhonemicLine';
 import { AlignedCaptions } from './components/AlignedCaptions';
 import { ReferencePanel } from './components/ReferencePanel';
+import { AnalysisPanel } from './components/AnalysisPanel';
 import './App.css';
 
 export default function App() {
@@ -15,7 +16,7 @@ export default function App() {
         <h1>Live IPA Captions</h1>
         <p className="sub">
           Speech to English, phonemic IPA and phonetic IPA — entirely in your browser.
-          <strong> M3: English, phonemic and phonetic IPA.</strong>
+          <strong> M4: three IPA tracks with segmental analysis.</strong>
         </p>
       </header>
 
@@ -107,6 +108,7 @@ export default function App() {
       </section>
 
       {s.aligned && <ReferencePanel words={s.aligned} />}
+      {s.aligned && <AnalysisPanel words={s.aligned} baseline={s.baseline} />}
 
       <footer>
         <p className="hint">

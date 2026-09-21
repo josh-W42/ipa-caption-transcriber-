@@ -21,6 +21,7 @@ import { Lexicon } from '../phonemic/lexicon';
 import { benchmarkAsr } from '../asr/benchmark';
 import { PhoneticClient } from '../phonetic/client';
 import { alignUtterance, type AlignedWord } from '../align/utterance';
+import type { Baseline } from '../analysis/inventory';
 
 /**
  * Trailing window handed to Whisper for each interim pass.
@@ -68,6 +69,7 @@ export function useSession() {
   const [lexicon, setLexicon] = useState<Lexicon | null>(null);
   const [aligned, setAligned] = useState<AlignedWord[] | null>(null);
   const [phoneticReady, setPhoneticReady] = useState(false);
+  const [baseline, setBaseline] = useState<Baseline | null>(null);
 
   const log = useCallback((line: string) => {
     const stamped = `${new Date().toISOString().slice(11, 19)}  ${line}`;
@@ -115,6 +117,18 @@ export function useSession() {
       // Loaded alongside the model: both are one-off startup costs, and overlapping
       // them hides the lexicon's ~0.9MB entirely behind the much larger model
       // download. A lexicon failure must not take captions down with it.
+      // Tiny next to the models; a failure here costs the baseline comparison only.
+      fetch('/phone-baseline.json')
+        .then((r) => (r.ok ? r.json() : Promise.reject(new Error(`HTTP ${r.status}`))))
+        .then((b: Baseline) => {
+          setBaseline(b);
+          log(
+            `baseline ready: ${Object.keys(b.proportions).length} phones, ` +
+              `${(b.tokenCoverage * 100).toFixed(1)}% token coverage`,
+          );
+        })
+        .catch((err) => log(`baseline failed (comparison unavailable): ${err}`));
+
       const lexiconPromise = Lexicon.load('/lexicon.txt')
         .then((lex) => {
           log(`lexicon ready: ${lex.size.toLocaleString()} entries`);
@@ -479,7 +493,7 @@ export function useSession() {
 
   return {
     status, progress, device, interim, final, level, error, diagnostics, lexicon,
-    aligned, phoneticReady,
+    aligned, phoneticReady, baseline,
     hasRecording: lastRecording.current !== null,
     load, start, stop, loadSample, exportRecording, setConfig, probeMic, runBenchmark,
   };
