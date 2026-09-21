@@ -283,3 +283,29 @@ footer code {
 footer a {
   color: var(--accent);
 }
+
+.ipa.phonetic {
+  color: #c9a227;
+  font-size: 13.5px;
+}
+
+/*
+ * Divergences carry a non-colour cue as well as colour, so the distinction survives
+ * colour blindness and greyscale screenshots.
+ */
+.diverged {
+  font-weight: 700;
+  border-bottom: 2px solid #e0b431;
+  cursor: help;
+}
+
+.dropped {
+  color: #8a6d1f;
+  cursor: help;
+  margin-left: 2px;
+}
+
+.badge.ok {
+  color: #7ec08a;
+  border-color: #2f5137;
+}

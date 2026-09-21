@@ -1,5 +1,6 @@
 import { useSession } from './session/useSession';
 import { PhonemicLine } from './components/PhonemicLine';
+import { AlignedCaptions } from './components/AlignedCaptions';
 import './App.css';
 
 export default function App() {
@@ -13,7 +14,7 @@ export default function App() {
         <h1>Live IPA Captions</h1>
         <p className="sub">
           Speech to English, phonemic IPA and phonetic IPA — entirely in your browser.
-          <strong> M2: English and phonemic IPA. The phonetic track is next.</strong>
+          <strong> M3: English, phonemic and phonetic IPA.</strong>
         </p>
       </header>
 
@@ -57,6 +58,7 @@ export default function App() {
           </button>
         )}
         {s.device && <span className="badge">{s.device}</span>}
+        {s.phoneticReady && <span className="badge ok">phonetic ready</span>}
 
         <button onClick={s.probeMic} disabled={busy || recording}>
           Diagnose microphone
@@ -83,7 +85,13 @@ export default function App() {
       )}
 
       <section className="captions">
-        {s.final && <PhonemicLine text={s.final} lexicon={s.lexicon} />}
+        {/* Once the phoneme model has run there is a third row to show, so the
+            aligned view replaces the two-row one. */}
+        {s.aligned ? (
+          <AlignedCaptions words={s.aligned} />
+        ) : (
+          s.final && <PhonemicLine text={s.final} lexicon={s.lexicon} />
+        )}
         {s.interim && <PhonemicLine text={s.interim} lexicon={s.lexicon} interim />}
 
         {!s.final && !s.interim && (
@@ -103,7 +111,8 @@ export default function App() {
           re-transcribed in one pass. The <code>/slashes/</code> mark this as a{' '}
           <strong>phonemic</strong> transcription — the dictionary's pronunciation, not
           yours. Words absent from the dictionary show <code>—</code> rather than a
-          guess.{' '}
+          guess. Where the phonetic row differs from the dictionary, the phone is
+          marked — hover it to see the change.{' '}
           <a href="/LEXICON-LICENSE.txt" target="_blank" rel="noreferrer">
             CMUdict licence
           </a>

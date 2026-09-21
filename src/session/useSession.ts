@@ -19,6 +19,8 @@ import { resampleTo16k } from '../audio/resample';
 import { probeMediaRecorder, formatProbe, verdict } from '../audio/micProbe';
 import { Lexicon } from '../phonemic/lexicon';
 import { benchmarkAsr } from '../asr/benchmark';
+import { PhoneticClient } from '../phonetic/client';
+import { alignUtterance, type AlignedWord } from '../align/utterance';
 
 /**
  * Trailing window handed to Whisper for each interim pass.
@@ -64,6 +66,8 @@ export function useSession() {
   const [error, setError] = useState<string | null>(null);
   const [diagnostics, setDiagnostics] = useState<string[]>([]);
   const [lexicon, setLexicon] = useState<Lexicon | null>(null);
+  const [aligned, setAligned] = useState<AlignedWord[] | null>(null);
+  const [phoneticReady, setPhoneticReady] = useState(false);
 
   const log = useCallback((line: string) => {
     const stamped = `${new Date().toISOString().slice(11, 19)}  ${line}`;
@@ -74,6 +78,7 @@ export function useSession() {
 
   const asr = useRef<AsrClient | null>(null);
   const asrRefined = useRef<AsrClient | null>(null);
+  const phonetic = useRef<PhoneticClient | null>(null);
   // Sized for the highest plausible device rate, since capture is now at native rate.
   const ring = useRef(new RingBuffer(48000 * WINDOW_SECONDS));
   const captureRate = useRef(TARGET_SAMPLE_RATE);
@@ -84,6 +89,9 @@ export function useSession() {
   const interimRef = useRef('');
   const lastRecording = useRef<Float32Array | null>(null);
   const configKey = useRef<keyof typeof CAPTURE_CONFIGS>('native');
+  // stop() is memoised on [log], so reading the `lexicon` STATE inside it would
+  // capture null forever. The ref always holds the current value.
+  const lexiconRef = useRef<Lexicon | null>(null);
 
   useEffect(() => {
     return () => {
@@ -91,6 +99,7 @@ export function useSession() {
       void capture.current?.stop();
       asr.current?.dispose();
       asrRefined.current?.dispose();
+      phonetic.current?.dispose();
     };
   }, []);
 
@@ -109,6 +118,7 @@ export function useSession() {
       const lexiconPromise = Lexicon.load('/lexicon.txt')
         .then((lex) => {
           log(`lexicon ready: ${lex.size.toLocaleString()} entries`);
+          lexiconRef.current = lex;
           setLexicon(lex);
         })
         .catch((err) => {
@@ -130,6 +140,23 @@ export function useSession() {
         })
         .catch((err) => {
           log(`refined model failed, will reuse the live model on stop: ${err}`);
+        });
+
+      // The phoneme model is the largest asset in the app at 197MB, and is only
+      // needed when recording stops. Loaded last and never awaited: until it arrives
+      // the app behaves exactly as M2 did, which is the correct degraded state.
+      const ph = new PhoneticClient();
+      ph.load()
+        .then((r) => {
+          phonetic.current = ph;
+          setPhoneticReady(true);
+          log(
+            `phoneme model ready on ${r.device} in ${r.loadSeconds.toFixed(1)}s ` +
+              `(${r.vocabSize} IPA symbols)`,
+          );
+        })
+        .catch((err) => {
+          log(`phoneme model failed — phonetic track unavailable: ${err}`);
         });
       setDevice(info.device);
       setProgress(null);
@@ -191,6 +218,7 @@ export function useSession() {
 
     setInterim('');
     setFinal('');
+    setAligned(null);
     interimRef.current = '';
     ring.current.clear();
     recording.current = [];
@@ -295,8 +323,32 @@ export function useSession() {
     try {
       const engine = asrRefined.current ?? asr.current!;
       const which = asrRefined.current ? 'base.en' : 'tiny.en (refined model not ready)';
+
+      // SEQUENTIAL, not concurrent. Both workers share one GPU, and running them
+      // together measured 24.6s against 2.2s for the ASR alone -- an 11x penalty from
+      // contention. Awaiting each in turn keeps both at their solo speed.
+      const audioForPhonetic = full.slice(0);
       const { text, seconds } = await engine.transcribe(full);
+      const phoneticResult = phonetic.current
+        ? await phonetic.current.transcribe(audioForPhonetic).catch((err) => {
+            log(`phonetic pass failed: ${err}`);
+            return null;
+          })
+        : null;
       log(`refined result via ${which} in ${seconds.toFixed(2)}s: "${text}"`);
+
+      if (phoneticResult && lexiconRef.current) {
+        const words = lexiconRef.current.transcribe(text);
+        const rows = alignUtterance(words, phoneticResult.phones);
+        setAligned(rows);
+        const subs = rows.flatMap((r) => r.ops).filter((o) => o.type === 'substitute');
+        const flaps = subs.filter((o) => o.from === 't' && o.to === 'ɾ');
+        log(
+          `phonetic: ${phoneticResult.phones.length} phones in ` +
+            `${phoneticResult.seconds.toFixed(2)}s at ${phoneticResult.msPerFrame.toFixed(1)}ms/frame`,
+        );
+        log(`alignment: ${subs.length} divergences, ${flaps.length} of them /t/ -> [ɾ] flaps`);
+      }
       setFinal(text);
       setInterim('');
       interimRef.current = '';
@@ -312,6 +364,7 @@ export function useSession() {
 
     setInterim('');
     setFinal('');
+    setAligned(null);
     interimRef.current = '';
     setStatus('finalizing');
     try {
@@ -321,9 +374,30 @@ export function useSession() {
           `speechRms=${maxFrameRms(audio).toFixed(5)} meanRms=${rms(audio).toFixed(5)}`,
       );
       const engine = asrRefined.current ?? asr.current;
+
+      // Sequential for the same reason as stop(): the two workers contend for one GPU.
+      const audioForPhonetic = audio.slice(0);
       const { text, seconds } = await engine.transcribe(audio);
+      const phoneticResult = phonetic.current
+        ? await phonetic.current.transcribe(audioForPhonetic).catch((err) => {
+            log(`phonetic pass failed: ${err}`);
+            return null;
+          })
+        : null;
       log(`sample result in ${seconds.toFixed(2)}s: "${text}"`);
       setFinal(text);
+
+      if (phoneticResult && lexiconRef.current) {
+        const rows = alignUtterance(lexiconRef.current.transcribe(text), phoneticResult.phones);
+        setAligned(rows);
+        const subs = rows.flatMap((r) => r.ops).filter((o) => o.type === 'substitute');
+        const flaps = subs.filter((o) => o.from === 't' && o.to === 'ɾ');
+        log(
+          `phonetic: ${phoneticResult.phones.length} phones in ` +
+            `${phoneticResult.seconds.toFixed(2)}s at ${phoneticResult.msPerFrame.toFixed(1)}ms/frame`,
+        );
+        log(`alignment: ${subs.length} divergences, ${flaps.length} of them /t/ -> [ɾ] flaps`);
+      }
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     }
@@ -388,6 +462,7 @@ export function useSession() {
 
   return {
     status, progress, device, interim, final, level, error, diagnostics, lexicon,
+    aligned, phoneticReady,
     hasRecording: lastRecording.current !== null,
     load, start, stop, loadSample, exportRecording, setConfig, probeMic, runBenchmark,
   };
