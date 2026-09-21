@@ -1,8 +1,27 @@
 # Live IPA Captions — Design
 
 **Date:** 2026-09-20
-**Status:** Approved, pending M0 risk resolution
+**Status:** Approved. **Amended 2026-09-20 after M0 — verdict GO.**
 **Purpose:** Portfolio / interview piece
+
+> **Amendment (2026-09-20).** M0 resolved all four risks; see
+> [`docs/findings/2026-09-20-m0-spike-findings.md`](../findings/2026-09-20-m0-spike-findings.md).
+> The phonetic track is viable and the design survives intact. Three changes, all
+> simplifications:
+>
+> 1. **Cross-origin isolation is not needed** (R4). COOP/COEP, `SharedArrayBuffer` and the
+>    `firebase.json` headers block are removed. Workers use transferable `ArrayBuffer`s.
+>    R2 is moot.
+> 2. **Whisper word timestamps are unavailable** in this ONNX export (R3) — and unnecessary.
+>    All timing comes from CTC frames at 20 ms resolution; word timing falls out of the M3
+>    alignment.
+> 3. **The phoneme model loads via `AutoModelForCTC` + hand-rolled greedy CTC decode**, not
+>    `pipeline()` (R1), because those repos ship no `tokenizer.json`. This is the better
+>    path regardless: it is the only one that yields the frame timings the design depends on.
+>
+> Model pinned to `onnx-community/wav2vec2-lv-60-espeak-cv-ft-ONNX` at **q4f16 (197 MB)**,
+> measured at **114x realtime**. Sections below are left as approved; where they conflict
+> with this banner, the banner wins.
 
 ## Summary
 
@@ -145,28 +164,26 @@ Therefore: **do not self-host the model weights.** transformers.js fetches from 
 Face CDN by default and caches into browser Cache Storage. Firebase then serves only the
 app bundle (a few hundred KB) and the transfer quota becomes irrelevant.
 
-If cross-origin isolation is required, set:
+~~If cross-origin isolation is required, set COOP/COEP headers.~~ **Not required** — M0/R4
+confirmed WebGPU works without isolation. No custom headers are needed.
 
-```json
-"headers": [{
-  "source": "**",
-  "headers": [
-    { "key": "Cross-Origin-Opener-Policy",   "value": "same-origin" },
-    { "key": "Cross-Origin-Embedder-Policy", "value": "require-corp" }
-  ]
-}]
-```
+**Amended by M0:** ONNX Runtime's WASM binary bundles into `dist/` at **26.8 MB** (6.7 MB
+gzipped) and *is* self-hosted, so Firebase transfer is roughly 1,500 cold visits/month,
+not "effectively unlimited" as stated above. Since threads are unnecessary, M1 should
+check whether the threaded asyncify build can be dropped from the bundle.
 
 ## Risk register
 
 M0 exists to resolve these before any application code is written.
 
-| # | Unknown | Consequence if it fails |
+**All four resolved by M0 on 2026-09-20.**
+
+| # | Unknown | Outcome |
 | --- | --- | --- |
-| R1 | Does a phoneme-level CTC model exist as a working transformers.js/ONNX build? (wav2vec2-espeak family, Charsiu, Allosaurus) | **Kills the phonetic half.** Fall back to phonemic-only plus rule-based allophony. Largest risk in the project. |
-| R2 | Does COEP `require-corp` break cross-origin model fetches from the HF CDN? | Switch to `credentialless`, or self-host weights and accept the bandwidth cost |
-| R3 | Are word-level timestamps available from Whisper in transformers.js? | Lose precise word/phone alignment; fall back to chunk-level |
-| R4 | Do we need `SharedArrayBuffer` at all? | If WebGPU suffices and `postMessage` transferables are adequate, drop COOP/COEP entirely and R2 evaporates |
+| R1 | Does a phoneme-level CTC model exist as a working transformers.js/ONNX build? | **RESOLVED — PASS.** `pipeline()` fails (no `tokenizer.json`), but `AutoModelForCTC` + greedy CTC decode against `vocab.json` yields correct narrow IPA at 20 ms resolution, plus the frame timings the pipeline path discards. Five flaps correctly placed. |
+| R2 | Does COEP `require-corp` break cross-origin model fetches from the HF CDN? | **MOOT.** R4 removed the need for isolation. |
+| R3 | Are word-level timestamps available from Whisper in transformers.js? | **RESOLVED — NO.** Export lacks the required cross-attentions; segment level is the ceiling and is too coarse. Does not matter: CTC frame timings supersede it. |
+| R4 | Do we need `SharedArrayBuffer` at all? | **RESOLVED — NO.** Everything passed at 114x realtime on WebGPU with `crossOriginIsolated: false`. COOP/COEP leaves the design. |
 
 R4 is the cheapest possible outcome: WebGPU does not require cross-origin isolation — only
 multithreaded WASM does.

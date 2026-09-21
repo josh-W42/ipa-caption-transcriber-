@@ -79,6 +79,101 @@ function ctcDecode(
   return out;
 }
 
+/** Load + run one (model, dtype) pair and return the decoded phone sequence. */
+async function runCtc(
+  model: string,
+  dtype: 'q4f16' | 'q4' | 'int8' | 'fp16',
+  audio: Float32Array,
+  vocab: string[],
+  blankId: number,
+  onProgress?: (p: any) => void,
+): Promise<{ phones: Phone[]; text: string; loadS: number; inferS: number }> {
+  const t0 = performance.now();
+  const processor: any = await AutoProcessor.from_pretrained(model);
+  const net: any = await AutoModelForCTC.from_pretrained(model, {
+    device: 'webgpu',
+    dtype,
+    progress_callback: onProgress,
+  });
+  const loadS = (performance.now() - t0) / 1000;
+
+  const t1 = performance.now();
+  const inputs = await processor(audio);
+  const { logits } = await net(inputs);
+  const inferS = (performance.now() - t1) / 1000;
+
+  const [, numFrames, vocabSize] = logits.dims as number[];
+  const secondsPerFrame = audio.length / 16000 / numFrames;
+  const phones = ctcDecode(
+    logits.data as Float32Array,
+    numFrames,
+    vocabSize,
+    vocab,
+    blankId,
+    secondsPerFrame,
+  );
+  return { phones, text: phones.map((p) => p.phone).join(''), loadS, inferS };
+}
+
+/**
+ * Task 5 — quantization vs. accuracy, on the direct CTC path.
+ *
+ * Every available phoneme model is large-architecture, so q4f16 (~197MB) is the
+ * download floor. This measures what that costs in phone accuracy, using fp16 as
+ * the closest available proxy for ground truth.
+ */
+export async function sweepCtcQuantization(audio: Float32Array, model: string) {
+  const vocab = await loadVocab(model);
+  const blankId = vocab.indexOf('<pad>');
+  const results: Record<string, { text: string; loadS: number; inferS: number }> = {};
+
+  for (const dtype of ['q4f16', 'q4', 'int8', 'fp16'] as const) {
+    const onProgress = progress(`R1 quant sweep — ${dtype}`);
+    try {
+      const r = await runCtc(model, dtype, audio, vocab, blankId, onProgress);
+      results[dtype] = { text: r.text, loadS: r.loadS, inferS: r.inferS };
+      report(
+        `R1 quant ${dtype}`,
+        'info',
+        `load ${r.loadS.toFixed(1)}s · infer ${r.inferS.toFixed(2)}s · ${r.phones.length} phones\n${r.text}`,
+      );
+    } catch (err) {
+      report(`R1 quant ${dtype}`, 'fail', `${err}`.split('\n')[0]);
+    }
+  }
+
+  const ref = results['fp16']?.text;
+  if (!ref) {
+    report('R1 quant drift', 'fail', 'fp16 reference unavailable — cannot measure drift.');
+    return results;
+  }
+
+  for (const [dtype, r] of Object.entries(results)) {
+    if (dtype === 'fp16') continue;
+    const dist = levenshtein([...r.text], [...ref]);
+    const per = ((dist / [...ref].length) * 100).toFixed(1);
+    report(
+      `R1 drift ${dtype}`,
+      dist === 0 ? 'pass' : 'info',
+      `phone edit distance vs fp16: ${dist} (${per}% of ${[...ref].length} symbols)\n` +
+        `  fp16:  ${ref}\n  ${dtype.padEnd(6)}: ${r.text}`,
+    );
+  }
+  return results;
+}
+
+function levenshtein(a: string[], b: string[]): number {
+  let prev = Array.from({ length: b.length + 1 }, (_, i) => i);
+  for (let i = 1; i <= a.length; i++) {
+    const cur = [i];
+    for (let j = 1; j <= b.length; j++) {
+      cur[j] = Math.min(prev[j] + 1, cur[j - 1] + 1, prev[j - 1] + (a[i - 1] === b[j - 1] ? 0 : 1));
+    }
+    prev = cur;
+  }
+  return prev[b.length];
+}
+
 export async function probeCtc(audio: Float32Array) {
   for (const model of MODELS) {
     const onProgress = progress(`R1-direct loading ${model} (q4f16)`);

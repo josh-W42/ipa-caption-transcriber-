@@ -2,13 +2,15 @@ import { report } from './ui';
 import { decodeTo16kMono, describe } from './audio';
 import { probeIsolation } from './probe-isolation';
 import { probeWhisper } from './probe-whisper';
-import { probePhoneme, sweepQuantization } from './probe-phoneme';
-import { probeCtc } from './probe-ctc';
+import { probePhoneme } from './probe-phoneme';
+import { probeCtc, sweepCtcQuantization } from './probe-ctc';
+import { benchmark } from './probe-bench';
 
 const FIXTURE = '/fixture.wav';
 
 // Task 5 downloads >1GB across four quantizations. Opt in explicitly via ?sweep
 const RUN_SWEEP = new URLSearchParams(location.search).has('sweep');
+const RUN_BENCH = new URLSearchParams(location.search).has('bench');
 
 async function main() {
   report('M0 spike', 'info', `transformers.js probes · ${new Date().toISOString()}`);
@@ -57,8 +59,12 @@ async function main() {
   const viaPipeline = await probePhoneme(audio);
   const phoneme = viaPipeline ?? (await probeCtc(audio));
 
+  if (phoneme && RUN_BENCH) {
+    await benchmark(phoneme.model, audio);
+  }
+
   if (phoneme && RUN_SWEEP) {
-    await sweepQuantization(audio, phoneme.model);
+    await sweepCtcQuantization(audio, phoneme.model);
   } else if (phoneme) {
     report(
       'R1 quant sweep',
