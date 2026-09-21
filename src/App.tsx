@@ -60,10 +60,10 @@ export default function App() {
         <label className="cfg">
           capture
           <select onChange={(e) => s.setConfig(e.target.value)} disabled={recording}>
-            <option value="A">A — processing on, routed (current)</option>
-            <option value="B">B — processing OFF, routed</option>
-            <option value="C">C — processing OFF, not routed</option>
-            <option value="D">D — processing OFF, native rate</option>
+            <option value="native">native rate + offline resample (fixed)</option>
+            <option value="A">A — forced 16kHz, processing on</option>
+            <option value="B">B — forced 16kHz, processing off, routed</option>
+            <option value="C">C — forced 16kHz, processing off</option>
           </select>
         </label>
       </div>

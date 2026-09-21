@@ -25,6 +25,31 @@ export function spectralCentroid(samples: Float32Array, sampleRate = TARGET_SAMP
   return (Math.asin(clamped) * sampleRate) / Math.PI;
 }
 
+/**
+ * Fraction of samples lost to dropouts — runs of exact zeros long enough that they
+ * cannot be ordinary zero crossings.
+ *
+ * Chopped capture keeps a speech-shaped envelope and a normal RMS, so no loudness
+ * metric detects it. This does. A healthy capture reads ~0; the broken one read 0.29.
+ */
+export function dropoutRatio(samples: Float32Array, minRun = 32): number {
+  if (samples.length === 0) return 1;
+
+  let lost = 0;
+  let run = 0;
+  for (let i = 0; i < samples.length; i++) {
+    if (samples[i] === 0) {
+      run++;
+    } else {
+      if (run >= minRun) lost += run;
+      run = 0;
+    }
+  }
+  if (run >= minRun) lost += run;
+
+  return lost / samples.length;
+}
+
 /** Capture configurations under test while diagnosing the spectral problem. */
 export interface CaptureConfig {
   /** Browser DSP: echoCancellation / noiseSuppression / autoGainControl. */
@@ -36,6 +61,16 @@ export interface CaptureConfig {
 }
 
 export const CAPTURE_CONFIGS: Record<string, CaptureConfig> = {
+  /**
+   * DEFAULT. Capture at the device's native rate and resample offline.
+   *
+   * Forcing the context to 16kHz makes Chrome resample a live MediaStream on the
+   * audio thread, where it starves: ~30% of samples arrived as zero-filled render
+   * quanta, chopping speech into 8ms fragments. Native rate avoids that path.
+   */
+  native: { processing: false, routeToDestination: false, forceSampleRate: false },
+
+  // Retained so the diagnosis stays reproducible.
   A: { processing: true, routeToDestination: true, forceSampleRate: true },
   B: { processing: false, routeToDestination: true, forceSampleRate: true },
   C: { processing: false, routeToDestination: false, forceSampleRate: true },
@@ -53,17 +88,19 @@ export interface Capture {
 }
 
 /**
- * Capture microphone audio as 16kHz mono Float32 frames.
+ * Capture microphone audio as mono Float32 frames at the context's sample rate.
  *
- * Requests the AudioContext at 16kHz so the browser resamples natively rather than
- * us hand-rolling a decimator. `capture.test.ts` asserts the browser honours this;
- * if a platform ever refuses, `sampleRate` reports what was actually granted and the
- * caller must resample.
+ * By default the context runs at the DEVICE's native rate and the caller resamples to
+ * 16kHz offline. Forcing the context to 16kHz instead makes Chrome resample a live
+ * MediaStream on the audio thread, where it starves and delivers ~30% of render
+ * quanta zero-filled — audio that keeps a normal envelope and RMS while being
+ * unintelligible. `sampleRate` reports the rate actually granted; the caller must
+ * resample from it.
  */
 export async function startCapture(
   onFrame: (frame: Float32Array) => void,
   log: (line: string) => void = () => {},
-  config: CaptureConfig = CAPTURE_CONFIGS.A,
+  config: CaptureConfig = CAPTURE_CONFIGS.native,
 ): Promise<Capture> {
   // Created before awaiting getUserMedia so it sits as close to the user gesture as
   // possible. An AudioContext can start suspended, and a suspended context never runs
@@ -95,9 +132,9 @@ export async function startCapture(
   const stream = await navigator.mediaDevices.getUserMedia({
     audio: {
       channelCount: 1,
-      // Browser DSP is the prime suspect for stripping the voiced band: the echo
-      // canceller sees the mic in the render path and subtracts it, and noise
-      // suppression can gut low frequencies. None of it helps transcription.
+      // Off by default: none of it helps transcription, and AGC in particular fights
+      // the level normalisation the model already does. Tested and found NOT to be
+      // the cause of the dropout bug, but there is no reason to leave it on.
       echoCancellation: config.processing,
       noiseSuppression: config.processing,
       autoGainControl: config.processing,
