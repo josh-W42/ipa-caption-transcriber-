@@ -5,8 +5,10 @@ import {
   startCapture,
   rms,
   maxFrameRms,
+  spectralCentroid,
   SILENCE_RMS,
   TARGET_SAMPLE_RATE,
+  CAPTURE_CONFIGS,
   type Capture,
 } from '../audio/capture';
 import { decodeTo16kMono } from '../audio/decode';
@@ -45,6 +47,7 @@ export function useSession() {
   const inFlight = useRef(false);
   const interimRef = useRef('');
   const lastRecording = useRef<Float32Array | null>(null);
+  const configKey = useRef<keyof typeof CAPTURE_CONFIGS>('A');
 
   useEffect(() => {
     return () => {
@@ -86,6 +89,7 @@ export function useSession() {
     const buf = ring.current.readLast(TARGET_SAMPLE_RATE * WINDOW_SECONDS);
     const meanRms = rms(buf);
     const speechRms = maxFrameRms(buf);
+    const centroid = spectralCentroid(buf);
     setLevel(speechRms);
 
     // Gate on the loudest short frame, not the window mean: averaging speech against
@@ -103,7 +107,7 @@ export function useSession() {
       // readLast returns a fresh copy, so transferring it is safe.
       const { text, seconds } = await asr.current.transcribe(buf);
       log(
-        `tick ok — speechRms=${speechRms.toFixed(5)} meanRms=${meanRms.toFixed(5)} ` +
+        `tick ok — speechRms=${speechRms.toFixed(5)} centroid=${centroid.toFixed(0)}Hz ` +
           `infer=${seconds.toFixed(2)}s text="${text}"`,
       );
       if (text) {
@@ -132,7 +136,7 @@ export function useSession() {
       capture.current = await startCapture((frame) => {
         ring.current.write(frame);
         recording.current.push(frame);
-      }, log);
+      }, log, CAPTURE_CONFIGS[configKey.current]);
       log(`capture running at ${capture.current.sampleRate}Hz`);
       setStatus('recording');
       timer.current = globalThis.setInterval(tick, TICK_MS);
@@ -188,9 +192,17 @@ export function useSession() {
     // Kept so it can be exported and listened to: when the model disagrees with the
     // loudness statistics, the bytes are the only arbiter.
     lastRecording.current = full.slice(0);
+    const centroid = spectralCentroid(full);
     log(
       `refined pass over ${(total / TARGET_SAMPLE_RATE).toFixed(2)}s — ` +
-        `speechRms=${maxFrameRms(full).toFixed(5)} meanRms=${rms(full).toFixed(5)}`,
+        `speechRms=${maxFrameRms(full).toFixed(5)} centroid=${centroid.toFixed(0)}Hz`,
+    );
+    // Healthy voiced speech sits near 800Hz. Around 3500Hz means the voiced band has
+    // been stripped out and only high-frequency residue remains.
+    log(
+      centroid < 1500
+        ? `VERDICT config ${configKey.current}: spectrum looks like speech (${centroid.toFixed(0)}Hz)`
+        : `VERDICT config ${configKey.current}: VOICED BAND MISSING (${centroid.toFixed(0)}Hz, expected ~800Hz)`,
     );
 
     try {
@@ -235,9 +247,19 @@ export function useSession() {
     log(`exported ${(rec.length / TARGET_SAMPLE_RATE).toFixed(2)}s of captured audio`);
   }, [log]);
 
+  const setConfig = useCallback(
+    (k: string) => {
+      if (k in CAPTURE_CONFIGS) {
+        configKey.current = k as keyof typeof CAPTURE_CONFIGS;
+        log(`capture config set to ${k}: ${JSON.stringify(CAPTURE_CONFIGS[k])}`);
+      }
+    },
+    [log],
+  );
+
   return {
     status, progress, device, interim, final, level, error, diagnostics,
     hasRecording: lastRecording.current !== null,
-    load, start, stop, loadSample, exportRecording,
+    load, start, stop, loadSample, exportRecording, setConfig,
   };
 }

@@ -1,5 +1,47 @@
 export const TARGET_SAMPLE_RATE = 16000;
 
+/**
+ * Rough spectral centroid, without an FFT.
+ *
+ * For a sinusoid at frequency f, rms(diff(x))/rms(x) == 2·sin(πf/fs), so inverting
+ * that gives a usable centre-of-mass estimate. Cheap, and more than accurate enough
+ * to tell voiced speech (~800Hz) from the high-frequency residue left behind when
+ * something strips the voiced band out (~3700Hz).
+ */
+export function spectralCentroid(samples: Float32Array, sampleRate = TARGET_SAMPLE_RATE): number {
+  if (samples.length < 2) return 0;
+
+  let sumSq = 0;
+  let diffSq = 0;
+  for (let i = 1; i < samples.length; i++) {
+    sumSq += samples[i] * samples[i];
+    const d = samples[i] - samples[i - 1];
+    diffSq += d * d;
+  }
+  if (sumSq === 0) return 0;
+
+  const ratio = Math.sqrt(diffSq / sumSq);
+  const clamped = Math.min(2, Math.max(0, ratio)) / 2;
+  return (Math.asin(clamped) * sampleRate) / Math.PI;
+}
+
+/** Capture configurations under test while diagnosing the spectral problem. */
+export interface CaptureConfig {
+  /** Browser DSP: echoCancellation / noiseSuppression / autoGainControl. */
+  processing: boolean;
+  /** Route the worklet to ctx.destination through a zero gain. */
+  routeToDestination: boolean;
+  /** Open the context at 16kHz, rather than the device's native rate. */
+  forceSampleRate: boolean;
+}
+
+export const CAPTURE_CONFIGS: Record<string, CaptureConfig> = {
+  A: { processing: true, routeToDestination: true, forceSampleRate: true },
+  B: { processing: false, routeToDestination: true, forceSampleRate: true },
+  C: { processing: false, routeToDestination: false, forceSampleRate: true },
+  D: { processing: false, routeToDestination: false, forceSampleRate: false },
+};
+
 export interface Capture {
   /** The rate actually granted by the browser. Verify against TARGET_SAMPLE_RATE. */
   readonly sampleRate: number;
@@ -21,12 +63,19 @@ export interface Capture {
 export async function startCapture(
   onFrame: (frame: Float32Array) => void,
   log: (line: string) => void = () => {},
+  config: CaptureConfig = CAPTURE_CONFIGS.A,
 ): Promise<Capture> {
   // Created before awaiting getUserMedia so it sits as close to the user gesture as
   // possible. An AudioContext can start suspended, and a suspended context never runs
   // the worklet — which looks exactly like a dead microphone.
-  const ctx = new AudioContext({ sampleRate: TARGET_SAMPLE_RATE });
-  log(`AudioContext created: state=${ctx.state} rate=${ctx.sampleRate}`);
+  const ctx = config.forceSampleRate
+    ? new AudioContext({ sampleRate: TARGET_SAMPLE_RATE })
+    : new AudioContext();
+  log(
+    `AudioContext created: state=${ctx.state} rate=${ctx.sampleRate} ` +
+      `config={processing:${config.processing} route:${config.routeToDestination} ` +
+      `force16k:${config.forceSampleRate}}`,
+  );
 
   if (ctx.state === 'suspended') {
     // Raced: without user activation resume() can never settle, and a hung promise
@@ -46,9 +95,12 @@ export async function startCapture(
   const stream = await navigator.mediaDevices.getUserMedia({
     audio: {
       channelCount: 1,
-      echoCancellation: true,
-      noiseSuppression: true,
-      autoGainControl: true,
+      // Browser DSP is the prime suspect for stripping the voiced band: the echo
+      // canceller sees the mic in the render path and subtracts it, and noise
+      // suppression can gut low frequencies. None of it helps transcription.
+      echoCancellation: config.processing,
+      noiseSuppression: config.processing,
+      autoGainControl: config.processing,
     },
   });
 
@@ -80,13 +132,13 @@ export async function startCapture(
   };
 
   source.connect(node);
-  // Routed to the destination through a muted gain rather than left dangling. The
-  // graph is pulled from the destination, so an unreachable node is not guaranteed to
-  // be processed; the zero gain keeps the mic from echoing to the speakers.
-  const mute = ctx.createGain();
-  mute.gain.value = 0;
-  node.connect(mute);
-  mute.connect(ctx.destination);
+  let mute: GainNode | null = null;
+  if (config.routeToDestination) {
+    mute = ctx.createGain();
+    mute.gain.value = 0;
+    node.connect(mute);
+    mute.connect(ctx.destination);
+  }
 
   let stopped = false;
 
@@ -108,7 +160,7 @@ export async function startCapture(
       node.port.onmessage = null;
       source.disconnect();
       node.disconnect();
-      mute.disconnect();
+      mute?.disconnect();
       stream.getTracks().forEach((t) => t.stop());
       await ctx.close();
     },

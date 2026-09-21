@@ -56,6 +56,16 @@ export default function App() {
           </button>
         )}
         {s.device && <span className="badge">{s.device}</span>}
+
+        <label className="cfg">
+          capture
+          <select onChange={(e) => s.setConfig(e.target.value)} disabled={recording}>
+            <option value="A">A — processing on, routed (current)</option>
+            <option value="B">B — processing OFF, routed</option>
+            <option value="C">C — processing OFF, not routed</option>
+            <option value="D">D — processing OFF, native rate</option>
+          </select>
+        </label>
       </div>
 
       {recording && (
