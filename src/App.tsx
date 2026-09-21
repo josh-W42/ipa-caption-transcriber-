@@ -57,6 +57,10 @@ export default function App() {
         )}
         {s.device && <span className="badge">{s.device}</span>}
 
+        <button onClick={s.probeMic} disabled={busy || recording}>
+          Diagnose microphone
+        </button>
+
         <label className="cfg">
           capture
           <select onChange={(e) => s.setConfig(e.target.value)} disabled={recording}>

@@ -16,6 +16,7 @@ import { decodeTo16kMono } from '../audio/decode';
 import { stitch } from '../transcript/stitch';
 import { downloadWav } from '../audio/wav';
 import { resampleTo16k } from '../audio/resample';
+import { probeMediaRecorder, formatProbe } from '../audio/micProbe';
 
 /** Trailing window handed to Whisper for each interim pass. */
 const WINDOW_SECONDS = 5;
@@ -261,6 +262,31 @@ export function useSession() {
     log(`exported ${(rec.length / TARGET_SAMPLE_RATE).toFixed(2)}s of captured audio`);
   }, [log]);
 
+  /**
+   * Records the same microphone through MediaRecorder instead of the Web Audio
+   * graph. Tells us whether the dropouts come from my capture code or from the
+   * stream itself.
+   */
+  const probeMic = useCallback(async () => {
+    setStatus('finalizing');
+    try {
+      log('--- microphone probe: speak normally for 8 seconds ---');
+      const r = await probeMediaRecorder(8, log);
+      if (r) {
+        log(formatProbe(r));
+        log(
+          r.dropouts < 0.05
+            ? 'MediaRecorder is CLEAN -> the fault is in the Web Audio capture graph.'
+            : 'MediaRecorder is ALSO BROKEN -> the fault is upstream of the browser: ' +
+              'the audio device, its driver, or another app holding the microphone.',
+        );
+      }
+    } catch (err) {
+      log(`probe failed — ${err instanceof Error ? err.message : String(err)}`);
+    }
+    setStatus('ready');
+  }, [log]);
+
   const setConfig = useCallback(
     (k: string) => {
       if (k in CAPTURE_CONFIGS) {
@@ -274,6 +300,6 @@ export function useSession() {
   return {
     status, progress, device, interim, final, level, error, diagnostics,
     hasRecording: lastRecording.current !== null,
-    load, start, stop, loadSample, exportRecording, setConfig,
+    load, start, stop, loadSample, exportRecording, setConfig, probeMic,
   };
 }
