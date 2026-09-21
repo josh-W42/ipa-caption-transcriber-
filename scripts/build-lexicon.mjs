@@ -20,6 +20,7 @@ const out = [];
 let skippedComments = 0;
 let skippedAlternates = 0;
 let skippedMalformed = 0;
+let annotated = 0;
 
 for (const raw of lines) {
   const line = raw.trim();
@@ -37,11 +38,16 @@ for (const raw of lines) {
   }
 
   const word = line.slice(0, sp).toLowerCase();
-  const phones = line.slice(sp + 1).trim();
+
+  // Some entries carry an inline annotation: "aalborg AO1 L B AO0 R G # place, danish".
+  // Left in place, those comment words parse as ARPAbet symbols and throw at runtime.
+  const hash = line.indexOf('#', sp);
+  const phones = (hash === -1 ? line.slice(sp + 1) : line.slice(sp + 1, hash)).trim();
   if (!phones) {
     skippedMalformed++;
     continue;
   }
+  if (hash !== -1) annotated++;
 
   // Alternate pronunciations appear as word(2), word(3). Real, but M2 shows one
   // canonical form; alternates are M4 material.
@@ -63,5 +69,6 @@ console.log(`entries written     ${out.length.toLocaleString()}`);
 console.log(`skipped comments    ${skippedComments}`);
 console.log(`skipped alternates  ${skippedAlternates.toLocaleString()}`);
 console.log(`skipped malformed   ${skippedMalformed}`);
+console.log(`inline comments cut ${annotated}`);
 console.log(`raw size            ${(raw / 1e6).toFixed(2)} MB`);
 console.log(`gzipped size        ${(gz / 1e6).toFixed(2)} MB   <- what Firebase serves`);

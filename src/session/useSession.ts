@@ -17,6 +17,7 @@ import { stitch } from '../transcript/stitch';
 import { downloadWav } from '../audio/wav';
 import { resampleTo16k } from '../audio/resample';
 import { probeMediaRecorder, formatProbe, verdict } from '../audio/micProbe';
+import { Lexicon } from '../phonemic/lexicon';
 
 /** Trailing window handed to Whisper for each interim pass. */
 const WINDOW_SECONDS = 5;
@@ -41,6 +42,7 @@ export function useSession() {
   const [level, setLevel] = useState(0);
   const [error, setError] = useState<string | null>(null);
   const [diagnostics, setDiagnostics] = useState<string[]>([]);
+  const [lexicon, setLexicon] = useState<Lexicon | null>(null);
 
   const log = useCallback((line: string) => {
     const stamped = `${new Date().toISOString().slice(11, 19)}  ${line}`;
@@ -77,8 +79,22 @@ export function useSession() {
       const client = new AsrClient();
       client.onProgress = setProgress;
       asr.current = client;
+
+      // Loaded alongside the model: both are one-off startup costs, and overlapping
+      // them hides the lexicon's ~0.9MB entirely behind the much larger model
+      // download. A lexicon failure must not take captions down with it.
+      const lexiconPromise = Lexicon.load('/lexicon.txt')
+        .then((lex) => {
+          log(`lexicon ready: ${lex.size.toLocaleString()} entries`);
+          setLexicon(lex);
+        })
+        .catch((err) => {
+          log(`lexicon FAILED (captions will run without IPA): ${err}`);
+        });
+
       const info = await client.load();
       log(`model ready on ${info.device} in ${info.loadSeconds.toFixed(1)}s`);
+      await lexiconPromise;
       setDevice(info.device);
       setProgress(null);
       setStatus('ready');
@@ -320,7 +336,7 @@ export function useSession() {
   );
 
   return {
-    status, progress, device, interim, final, level, error, diagnostics,
+    status, progress, device, interim, final, level, error, diagnostics, lexicon,
     hasRecording: lastRecording.current !== null,
     load, start, stop, loadSample, exportRecording, setConfig, probeMic,
   };

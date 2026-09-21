@@ -1,4 +1,5 @@
 import { useSession } from './session/useSession';
+import { PhonemicLine } from './components/PhonemicLine';
 import './App.css';
 
 export default function App() {
@@ -12,7 +13,7 @@ export default function App() {
         <h1>Live IPA Captions</h1>
         <p className="sub">
           Speech to English, phonemic IPA and phonetic IPA — entirely in your browser.
-          <strong> M1: English captions only.</strong>
+          <strong> M2: English and phonemic IPA. The phonetic track is next.</strong>
         </p>
       </header>
 
@@ -79,8 +80,8 @@ export default function App() {
       )}
 
       <section className="captions">
-        {s.final && <p className="final">{s.final}</p>}
-        {s.interim && <p className="interim">{s.interim}</p>}
+        {s.final && <PhonemicLine text={s.final} lexicon={s.lexicon} />}
+        {s.interim && <PhonemicLine text={s.interim} lexicon={s.lexicon} interim />}
 
         {!s.final && !s.interim && (
           <p className="idle">
@@ -95,8 +96,14 @@ export default function App() {
 
       <footer>
         <p className="hint">
-          Interim text is shown dimmed while you speak. On stop, the whole recording is
-          re-transcribed in one pass — more accurate than any 5-second window.
+          Interim text is dimmed while you speak; on stop the whole recording is
+          re-transcribed in one pass. The <code>/slashes/</code> mark this as a{' '}
+          <strong>phonemic</strong> transcription — the dictionary's pronunciation, not
+          yours. Words absent from the dictionary show <code>—</code> rather than a
+          guess.{' '}
+          <a href="/LEXICON-LICENSE.txt" target="_blank" rel="noreferrer">
+            CMUdict licence
+          </a>
         </p>
 
         {s.diagnostics.length > 0 && (
