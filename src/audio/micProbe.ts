@@ -19,14 +19,34 @@ import { resampleTo16k } from './resample';
 export interface ProbeResult {
   path: string;
   seconds: number;
+  /** Seconds of wall clock the recording covered. */
+  expectedSeconds: number;
   dropouts: number;
   centroid: number;
   speechRms: number;
 }
 
-const summarise = (path: string, audio: Float32Array): ProbeResult => ({
+/**
+ * Audio can be lost two ways, and a check for one is blind to the other.
+ *
+ * Web Audio holds duration constant and zero-fills gaps, so loss shows up as
+ * dropouts. MediaRecorder simply does not encode the gaps, so the same loss shows up
+ * as a SHORT recording with zero dropouts. Checking only dropouts called a recording
+ * that had lost a third of its duration "clean".
+ */
+export function verdict(r: ProbeResult): { healthy: boolean; reasons: string[] } {
+  const reasons: string[] = [];
+  const shortfall = 1 - r.seconds / r.expectedSeconds;
+  if (r.dropouts >= 0.05) reasons.push(`${(r.dropouts * 100).toFixed(1)}% zero-filled`);
+  if (shortfall >= 0.1) reasons.push(`${(shortfall * 100).toFixed(1)}% of duration missing`);
+  if (r.centroid >= 1500) reasons.push(`centroid ${r.centroid.toFixed(0)}Hz (speech is ~800Hz)`);
+  return { healthy: reasons.length === 0, reasons };
+}
+
+const summarise = (path: string, audio: Float32Array, expectedSeconds: number): ProbeResult => ({
   path,
   seconds: audio.length / TARGET_SAMPLE_RATE,
+  expectedSeconds,
   dropouts: dropoutRatio(audio),
   centroid: spectralCentroid(audio),
   speechRms: maxFrameRms(audio),
@@ -72,17 +92,18 @@ export async function probeMediaRecorder(
 
     const mono = decoded.getChannelData(0);
     const at16k = await resampleTo16k(new Float32Array(mono), decoded.sampleRate);
-    return summarise('MediaRecorder', at16k);
+    return summarise('MediaRecorder', at16k, seconds);
   } finally {
     stream.getTracks().forEach((t) => t.stop());
   }
 }
 
 export function formatProbe(r: ProbeResult): string {
-  const healthy = r.dropouts < 0.05 && r.centroid < 1500;
+  const v = verdict(r);
   return (
-    `${r.path}: ${r.seconds.toFixed(2)}s dropouts=${(r.dropouts * 100).toFixed(1)}% ` +
-    `centroid=${r.centroid.toFixed(0)}Hz speechRms=${r.speechRms.toFixed(4)} ` +
-    `-> ${healthy ? 'HEALTHY' : 'BROKEN'}`
+    `${r.path}: got ${r.seconds.toFixed(2)}s of ${r.expectedSeconds.toFixed(2)}s ` +
+    `dropouts=${(r.dropouts * 100).toFixed(1)}% centroid=${r.centroid.toFixed(0)}Hz ` +
+    `speechRms=${r.speechRms.toFixed(4)}
+  -> ${v.healthy ? 'HEALTHY' : `BROKEN: ${v.reasons.join('; ')}`}`
   );
 }

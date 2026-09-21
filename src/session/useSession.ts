@@ -16,7 +16,7 @@ import { decodeTo16kMono } from '../audio/decode';
 import { stitch } from '../transcript/stitch';
 import { downloadWav } from '../audio/wav';
 import { resampleTo16k } from '../audio/resample';
-import { probeMediaRecorder, formatProbe } from '../audio/micProbe';
+import { probeMediaRecorder, formatProbe, verdict } from '../audio/micProbe';
 
 /** Trailing window handed to Whisper for each interim pass. */
 const WINDOW_SECONDS = 5;
@@ -275,10 +275,11 @@ export function useSession() {
       if (r) {
         log(formatProbe(r));
         log(
-          r.dropouts < 0.05
+          verdict(r).healthy
             ? 'MediaRecorder is CLEAN -> the fault is in the Web Audio capture graph.'
             : 'MediaRecorder is ALSO BROKEN -> the fault is upstream of the browser: ' +
-              'the audio device, its driver, or another app holding the microphone.',
+              'the audio device, its driver, or another app holding the microphone. ' +
+              'No amount of Web Audio code will fix this.',
         );
       }
     } catch (err) {
