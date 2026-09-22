@@ -6,7 +6,7 @@ last two.
 
 No audio leaves your machine. There is no server.
 
-**Status: M5 complete.** Three caption rows — English, the dictionary's `/phonemic/`
+**Status: complete through M6.** Three caption rows — English, the dictionary's `/phonemic/`
 IPA, and the `[phonetic]` IPA of what was actually said — plus segmental analysis
 (phonological processes, IPA chart, confusion matrix, baseline comparison) and the
 suprasegmental layer: vowel formants in the F1×F2 space, pitch contour, and rhythm.
@@ -49,6 +49,17 @@ mic -> AudioWorklet (16kHz mono) -> ring buffer
 Captions stream while you speak from a 5-second trailing window; on stop the whole
 recording is re-transcribed in one pass, which is more accurate because the model sees
 full context rather than a keyhole.
+
+## What it is for
+
+A demonstration that a full phonetics pipeline — speech recognition, dictionary lookup,
+acoustic phoneme recognition, alignment, and signal analysis — fits inside a browser tab
+with no server and no audio leaving the machine.
+
+The interesting part is not that it transcribes. It is that it holds **two transcriptions
+side by side** — what the dictionary expects and what was actually produced — and can say
+something specific about the gap: that this speaker flaps their /t/s, merges cot with
+caught, and reduces "and" less than the dictionary does.
 
 ## Running it
 
