@@ -23,6 +23,7 @@ import { PhoneticClient } from '../phonetic/client';
 import { alignUtterance, type AlignedWord } from '../align/utterance';
 import type { Baseline } from '../analysis/inventory';
 import { DspClient, type DspResult } from '../dsp/client';
+import { INITIAL_STAGES, type LoadStage, type StageId, type StageStatus } from './stages';
 
 /**
  * Trailing window handed to Whisper for each interim pass.
@@ -72,6 +73,30 @@ export function useSession() {
   const [phoneticReady, setPhoneticReady] = useState(false);
   const [baseline, setBaseline] = useState<Baseline | null>(null);
   const [dsp, setDsp] = useState<DspResult | null>(null);
+  const [stages, setStages] = useState<LoadStage[]>(INITIAL_STAGES);
+  const [webgpu, setWebgpu] = useState<boolean | null>(null);
+
+  const setStage = useCallback((id: StageId, patch: Partial<LoadStage>) => {
+    setStages((prev) => prev.map((s) => (s.id === id ? { ...s, ...patch } : s)));
+  }, []);
+
+  /**
+   * A model that arrives without emitting progress came from Cache Storage. Reporting
+   * it as "cached" rather than "ready" lets the UI skip the download chrome entirely
+   * for a returning visitor.
+   */
+  const settleStage = useCallback(
+    (id: StageId, sawProgress: boolean, status: StageStatus = 'ready') => {
+      setStages((prev) =>
+        prev.map((s) =>
+          s.id === id
+            ? { ...s, status: status === 'ready' && !sawProgress ? 'cached' : status, progress: 100 }
+            : s,
+        ),
+      );
+    },
+    [],
+  );
 
   const log = useCallback((line: string) => {
     const stamped = `${new Date().toISOString().slice(11, 19)}  ${line}`;
@@ -115,7 +140,13 @@ export function useSession() {
     setError(null);
     try {
       const client = new AsrClient();
-      client.onProgress = setProgress;
+      let liveSawProgress = false;
+      setStage('live', { status: 'loading' });
+      client.onProgress = (p) => {
+        liveSawProgress = true;
+        setProgress(p);
+        setStage('live', { status: 'loading', progress: p.progress });
+      };
       asr.current = client;
 
       // Loaded alongside the model: both are one-off startup costs, and overlapping
@@ -133,30 +164,46 @@ export function useSession() {
         })
         .catch((err) => log(`baseline failed (comparison unavailable): ${err}`));
 
-      const lexiconPromise = Lexicon.load('/lexicon.txt')
+      setStage('lexicon', { status: 'loading' });
+      let lexiconSawProgress = false;
+      const lexiconPromise = Lexicon.load('/lexicon.txt', () => {
+        lexiconSawProgress = true;
+      })
         .then((lex) => {
+          settleStage('lexicon', lexiconSawProgress);
           log(`lexicon ready: ${lex.size.toLocaleString()} entries`);
           lexiconRef.current = lex;
           setLexicon(lex);
         })
         .catch((err) => {
+          settleStage('lexicon', true, 'failed');
           log(`lexicon FAILED (captions will run without IPA): ${err}`);
         });
 
       const info = await client.load(LIVE_MODEL);
+      settleStage('live', liveSawProgress);
+      setWebgpu(info.device === 'webgpu');
       log(`live model (tiny.en) ready on ${info.device} in ${info.loadSeconds.toFixed(1)}s`);
       await lexiconPromise;
 
       // Background: the bigger model for the refined pass. Deliberately not awaited —
       // captions must not wait on a download only needed when recording stops.
       const refined = new AsrClient();
+      let refinedSawProgress = false;
+      setStage('refined', { status: 'loading' });
+      refined.onProgress = (p) => {
+        refinedSawProgress = true;
+        setStage('refined', { status: 'loading', progress: p.progress });
+      };
       refined
         .load(REFINED_MODEL)
         .then((r) => {
+          settleStage('refined', refinedSawProgress);
           asrRefined.current = refined;
           log(`refined model (base.en) ready on ${r.device} in ${r.loadSeconds.toFixed(1)}s`);
         })
         .catch((err) => {
+          settleStage('refined', true, 'failed');
           log(`refined model failed, will reuse the live model on stop: ${err}`);
         });
 
@@ -164,8 +211,15 @@ export function useSession() {
       // needed when recording stops. Loaded last and never awaited: until it arrives
       // the app behaves exactly as M2 did, which is the correct degraded state.
       const ph = new PhoneticClient();
+      let phonemeSawProgress = false;
+      setStage('phoneme', { status: 'loading' });
+      ph.onProgress = (p) => {
+        phonemeSawProgress = true;
+        setStage('phoneme', { status: 'loading', progress: p.progress });
+      };
       ph.load()
         .then((r) => {
+          settleStage('phoneme', phonemeSawProgress);
           phonetic.current = ph;
           setPhoneticReady(true);
           log(
@@ -174,6 +228,7 @@ export function useSession() {
           );
         })
         .catch((err) => {
+          settleStage('phoneme', true, 'failed');
           log(`phoneme model failed — phonetic track unavailable: ${err}`);
         });
       setDevice(info.device);
@@ -184,7 +239,7 @@ export function useSession() {
       setError(err instanceof Error ? err.message : String(err));
       setStatus('error');
     }
-  }, []);
+  }, [log, setStage, settleStage]);
 
   /** One interim pass over the trailing window. */
   const tick = useCallback(async () => {
@@ -535,7 +590,7 @@ export function useSession() {
 
   return {
     status, progress, device, interim, final, level, error, diagnostics, lexicon,
-    aligned, phoneticReady, baseline, dsp,
+    aligned, phoneticReady, baseline, dsp, stages, webgpu,
     hasRecording: lastRecording.current !== null,
     load, start, stop, loadSample, exportRecording, setConfig, probeMic, runBenchmark,
   };

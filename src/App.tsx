@@ -4,82 +4,101 @@ import { AlignedCaptions } from './components/AlignedCaptions';
 import { ReferencePanel } from './components/ReferencePanel';
 import { AnalysisPanel } from './components/AnalysisPanel';
 import { ProsodyPanel } from './components/ProsodyPanel';
+import { LoadingPanel } from './components/LoadingPanel';
+import { captionsReady } from './session/stages';
 import './App.css';
 
 export default function App() {
   const s = useSession();
   const busy = s.status === 'loading' || s.status === 'finalizing';
   const recording = s.status === 'recording';
+  const started = s.status !== 'idle';
+  const usable = captionsReady(s.stages);
+
+  // A microphone fault is the one error a visitor cannot diagnose unaided — and it
+  // happened during development, where it cost a long session before the cause turned
+  // out to be the device rather than the code.
+  const micProblem =
+    s.error !== null && /microphone|mic\b|permission|NotAllowed|NotFound/i.test(s.error);
 
   return (
     <main className="app">
       <header>
         <h1>Live IPA Captions</h1>
         <p className="sub">
-          Speech to English, phonemic IPA and phonetic IPA — entirely in your browser.
-          <strong> M5: three IPA tracks, segmental analysis, prosody and vowel space.</strong>
+          Speak, and see three things at once: <strong>what you said</strong>, the{' '}
+          <strong>/dictionary pronunciation/</strong> of those words, and the{' '}
+          <strong>[phonetic transcription]</strong> of how you actually said them — then
+          an analysis of where the last two differ.
+        </p>
+        <p className="sub quiet">
+          Everything runs in your browser. No audio is uploaded, and there is no server.
         </p>
       </header>
 
-      {s.status === 'loading' && (
-        <div className="panel">
-          <div className="row">
-            <span>Downloading speech model…</span>
-            <span className="mono">{s.progress ? `${s.progress.progress.toFixed(0)}%` : ''}</span>
-          </div>
-          <div className="bar">
-            <div className="fill" style={{ width: `${s.progress?.progress ?? 0}%` }} />
-          </div>
-          <p className="hint">
-            {s.progress?.file ?? 'Fetching…'} — this happens once, then it is cached.
-          </p>
+      <LoadingPanel stages={s.stages} />
+
+      {s.webgpu === false && (
+        <div className="panel warn">
+          <strong>No WebGPU in this browser.</strong> Everything still works, but
+          inference runs on WASM and will be several times slower. Chrome or Edge on a
+          desktop gives the best results.
         </div>
       )}
 
       {s.error && (
         <div className="panel error">
           <strong>{s.error}</strong>
+          {micProblem && (
+            <p className="hint">
+              If the microphone seems connected but captions come out as nonsense, run{' '}
+              <button className="linkish" onClick={s.probeMic}>
+                Diagnose microphone
+              </button>{' '}
+              — it records through a second, independent path and reports whether the
+              device itself is dropping audio. During development this turned out to be a
+              faulty microphone rather than a bug, and nothing else revealed it.
+            </p>
+          )}
         </div>
       )}
 
       <div className="controls">
         {!recording ? (
           <button className="primary" onClick={s.start} disabled={busy}>
-            {s.status === 'idle' ? 'Start (downloads model)' : 'Start recording'}
+            Start recording
           </button>
         ) : (
           <button className="stop" onClick={s.stop}>
             Stop
           </button>
         )}
-        <button onClick={s.loadSample} disabled={busy || recording}>
-          Use sample audio
+
+        <button
+          className={started ? '' : 'suggested'}
+          onClick={s.loadSample}
+          disabled={busy || recording}
+        >
+          Try the sample
         </button>
-        {s.final !== null && s.status === 'ready' && (
+
+        {s.final && s.status === 'ready' && (
           <button onClick={s.exportRecording} disabled={recording}>
-            Download last recording
+            Download recording
           </button>
         )}
+
         {s.device && <span className="badge">{s.device}</span>}
         {s.phoneticReady && <span className="badge ok">phonetic ready</span>}
-
-        <button onClick={s.probeMic} disabled={busy || recording}>
-          Diagnose microphone
-        </button>
-        <button onClick={s.runBenchmark} disabled={busy || recording}>
-          Benchmark ASR
-        </button>
-
-        <label className="cfg">
-          capture
-          <select onChange={(e) => s.setConfig(e.target.value)} disabled={recording}>
-            <option value="native">native rate + offline resample (fixed)</option>
-            <option value="A">A — forced 16kHz, processing on</option>
-            <option value="B">B — forced 16kHz, processing off, routed</option>
-            <option value="C">C — forced 16kHz, processing off</option>
-          </select>
-        </label>
       </div>
+
+      {!started && (
+        <p className="hint firstrun">
+          <strong>No microphone needed to look around</strong> — “Try the sample” runs a
+          recorded sentence through the whole pipeline. Recording asks for microphone
+          permission and keeps the audio on your machine.
+        </p>
+      )}
 
       {recording && (
         <div className="meter" aria-label="input level">
@@ -88,8 +107,6 @@ export default function App() {
       )}
 
       <section className="captions">
-        {/* Once the phoneme model has run there is a third row to show, so the
-            aligned view replaces the two-row one. */}
         {s.aligned ? (
           <AlignedCaptions words={s.aligned} />
         ) : (
@@ -103,7 +120,11 @@ export default function App() {
               ? 'Listening…'
               : s.status === 'finalizing'
                 ? 'Transcribing…'
-                : 'Press start, or try the sample audio.'}
+                : usable
+                  ? 'Ready. Press record, or try the sample.'
+                  : started
+                    ? 'Loading the speech model…'
+                    : 'Captions will appear here.'}
           </p>
         )}
       </section>
@@ -115,22 +136,55 @@ export default function App() {
       <footer>
         <p className="hint">
           Interim text is dimmed while you speak; on stop the whole recording is
-          re-transcribed in one pass. The <code>/slashes/</code> mark this as a{' '}
-          <strong>phonemic</strong> transcription — the dictionary's pronunciation, not
-          yours. Words absent from the dictionary show <code>—</code> rather than a
-          guess. Where the phonetic row differs from the dictionary, the phone is
-          marked — hover it to see the change.{' '}
-          <a href="/LEXICON-LICENSE.txt" target="_blank" rel="noreferrer">
-            CMUdict licence
-          </a>
+          re-transcribed in one pass. <code>/Slashes/</code> mark the dictionary&rsquo;s
+          pronunciation, <code>[brackets]</code> what was actually produced, and a marked
+          phone is one that differs — hover it to see the change. Words absent from the
+          dictionary show <code>—</code> rather than a guess.
         </p>
 
-        {s.diagnostics.length > 0 && (
-          <details className="diag" open>
-            <summary>Diagnostics ({s.diagnostics.length})</summary>
-            <pre>{s.diagnostics.join('\n')}</pre>
-          </details>
-        )}
+        {/* Genuinely useful, but on the front page they make this look like a debug
+            console rather than an instrument. */}
+        <details className="devtools">
+          <summary>Developer tools</summary>
+          <div className="devtools-body">
+            <div className="controls">
+              <button onClick={s.probeMic} disabled={busy || recording}>
+                Diagnose microphone
+              </button>
+              <button onClick={s.runBenchmark} disabled={busy || recording}>
+                Benchmark ASR
+              </button>
+              <label className="cfg">
+                capture
+                <select onChange={(e) => s.setConfig(e.target.value)} disabled={recording}>
+                  <option value="native">native rate + offline resample (fixed)</option>
+                  <option value="A">A — forced 16kHz, processing on</option>
+                  <option value="B">B — forced 16kHz, processing off, routed</option>
+                  <option value="C">C — forced 16kHz, processing off</option>
+                </select>
+              </label>
+            </div>
+
+            {s.diagnostics.length > 0 && (
+              <details className="diag" open>
+                <summary>Diagnostics ({s.diagnostics.length})</summary>
+                <pre>{s.diagnostics.join('\n')}</pre>
+              </details>
+            )}
+          </div>
+        </details>
+
+        <p className="hint credits">
+          Pronunciations from{' '}
+          <a href="/LEXICON-LICENSE.txt" target="_blank" rel="noreferrer">
+            CMUdict
+          </a>
+          ; frequency baseline from{' '}
+          <a href="/BASELINE-LICENSE.txt" target="_blank" rel="noreferrer">
+            FrequencyWords
+          </a>
+          .
+        </p>
       </footer>
     </main>
   );
