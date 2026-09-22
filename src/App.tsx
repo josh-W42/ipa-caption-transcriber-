@@ -3,6 +3,7 @@ import { PhonemicLine } from './components/PhonemicLine';
 import { AlignedCaptions } from './components/AlignedCaptions';
 import { ReferencePanel } from './components/ReferencePanel';
 import { AnalysisPanel } from './components/AnalysisPanel';
+import { ProsodyPanel } from './components/ProsodyPanel';
 import './App.css';
 
 export default function App() {
@@ -16,7 +17,7 @@ export default function App() {
         <h1>Live IPA Captions</h1>
         <p className="sub">
           Speech to English, phonemic IPA and phonetic IPA — entirely in your browser.
-          <strong> M4: three IPA tracks with segmental analysis.</strong>
+          <strong> M5: three IPA tracks, segmental analysis, prosody and vowel space.</strong>
         </p>
       </header>
 
@@ -109,6 +110,7 @@ export default function App() {
 
       {s.aligned && <ReferencePanel words={s.aligned} />}
       {s.aligned && <AnalysisPanel words={s.aligned} baseline={s.baseline} />}
+      {s.dsp && <ProsodyPanel result={s.dsp} />}
 
       <footer>
         <p className="hint">

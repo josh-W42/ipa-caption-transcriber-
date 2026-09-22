@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { extractVowels, clusterByVowel, MIN_VOWEL_SECONDS, MIN_TOKENS_FOR_ELLIPSE } from './vowels';
+import { extractVowels, clusterByVowel, WINDOW_HALF_SECONDS, MIN_HALF_SECONDS, MIN_TOKENS_FOR_ELLIPSE } from './vowels';
 import { synthVowel, synthNoise, synthSilence, REFERENCE_VOWELS, DEFAULT_SAMPLE_RATE } from './synth';
 import type { AlignedWord } from '../align/utterance';
 
@@ -55,9 +55,45 @@ describe('extractVowels', () => {
     expect(extractVowels(audio, words, FS)).toHaveLength(0);
   });
 
-  it('skips intervals too short to hold a steady state', () => {
-    const { audio, words } = build([['ɑ', vowel('ɑ', MIN_VOWEL_SECONDS / 2)]]);
+  it('skips intervals too short for an order-18 LPC fit', () => {
+    // The label is centred on, so a label shorter than twice the minimum half-width
+    // still yields a usable window; one far shorter does not.
+    const { audio, words } = build([['ɑ', vowel('ɑ', MIN_HALF_SECONDS)]]);
     expect(extractVowels(audio, words, FS)).toHaveLength(0);
+  });
+
+  it('measures a one-frame CTC label by growing the window around it', () => {
+    // CTC alignments are peaky: the median label on the fixture lasts 20ms while the
+    // median gap between labels is 80ms. Trusting the label's own span rejected 36 of
+    // 44 phones as too short, which is why the window is centred and grown instead.
+    const seconds = 0.2;
+    const audio = vowel('ɑ', seconds);
+    const mid = seconds / 2;
+    const words: AlignedWord[] = [{
+      word: 'x', phonemic: null,
+      // A single 20ms label in the middle of 200ms of steady vowel.
+      phonetic: [{ phone: 'ɑ', start: mid - 0.01, end: mid + 0.01, conf: 0.9 }],
+      ops: [], start: 0, end: seconds,
+    }];
+    const out = extractVowels(audio, words, FS);
+    expect(out).toHaveLength(1);
+    expect(Math.abs(out[0].f2 - REFERENCE_VOWELS['ɑ'][1]) / REFERENCE_VOWELS['ɑ'][1]).toBeLessThan(0.08);
+  });
+
+  it('never grows the window across a neighbouring label', () => {
+    // Two adjacent labels 30ms apart: the window must stay on its own side.
+    const audio = vowel('ɑ', 0.3);
+    const words: AlignedWord[] = [{
+      word: 'x', phonemic: null,
+      phonetic: [
+        { phone: 'ɑ', start: 0.10, end: 0.12, conf: 0.9 },
+        { phone: 'i', start: 0.15, end: 0.17, conf: 0.9 },
+      ],
+      ops: [], start: 0, end: 0.3,
+    }];
+    for (const m of extractVowels(audio, words, FS)) {
+      expect(m.end - m.start).toBeLessThanOrEqual(WINDOW_HALF_SECONDS * 2 + 1e-9);
+    }
   });
 
   it('skips silence labelled as a vowel', () => {
@@ -69,27 +105,6 @@ describe('extractVowels', () => {
   it('skips unvoiced material labelled as a vowel', () => {
     const { audio, words } = build([['ɑ', synthNoise(0.2)]]);
     expect(extractVowels(audio, words, FS)).toHaveLength(0);
-  });
-
-  it('measures only the middle of the interval', () => {
-    // Half /ɑ/ then half /i/, labelled as one vowel. Measuring the whole span would
-    // average two different vowels into a value belonging to neither; measuring the
-    // middle 50% should land nearer the transition than either extreme.
-    const half = 0.15;
-    const joined = new Float32Array(Math.round(FS * half * 2));
-    joined.set(vowel('ɑ', half), 0);
-    joined.set(vowel('i', half), Math.round(FS * half));
-
-    const words: AlignedWord[] = [{
-      word: 'x', phonemic: null,
-      phonetic: [{ phone: 'ɑ', start: 0, end: half * 2, conf: 0.9 }],
-      ops: [], start: 0, end: half * 2,
-    }];
-
-    const [m] = extractVowels(joined, words, FS);
-    expect(m).toBeDefined();
-    // It saw material from both halves, so F2 sits between the two targets.
-    expect(m.f2).toBeGreaterThan(REFERENCE_VOWELS['ɑ'][1] * 0.8);
   });
 
   it('flags close vowels as having unreliable F1', () => {

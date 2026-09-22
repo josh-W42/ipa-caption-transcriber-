@@ -22,6 +22,7 @@ import { benchmarkAsr } from '../asr/benchmark';
 import { PhoneticClient } from '../phonetic/client';
 import { alignUtterance, type AlignedWord } from '../align/utterance';
 import type { Baseline } from '../analysis/inventory';
+import { DspClient, type DspResult } from '../dsp/client';
 
 /**
  * Trailing window handed to Whisper for each interim pass.
@@ -70,6 +71,7 @@ export function useSession() {
   const [aligned, setAligned] = useState<AlignedWord[] | null>(null);
   const [phoneticReady, setPhoneticReady] = useState(false);
   const [baseline, setBaseline] = useState<Baseline | null>(null);
+  const [dsp, setDsp] = useState<DspResult | null>(null);
 
   const log = useCallback((line: string) => {
     const stamped = `${new Date().toISOString().slice(11, 19)}  ${line}`;
@@ -81,6 +83,7 @@ export function useSession() {
   const asr = useRef<AsrClient | null>(null);
   const asrRefined = useRef<AsrClient | null>(null);
   const phonetic = useRef<PhoneticClient | null>(null);
+  const dspClient = useRef<DspClient | null>(null);
   // Sized for the highest plausible device rate, since capture is now at native rate.
   const ring = useRef(new RingBuffer(48000 * WINDOW_SECONDS));
   const captureRate = useRef(TARGET_SAMPLE_RATE);
@@ -102,6 +105,7 @@ export function useSession() {
       asr.current?.dispose();
       asrRefined.current?.dispose();
       phonetic.current?.dispose();
+      dspClient.current?.dispose();
     };
   }, []);
 
@@ -233,6 +237,7 @@ export function useSession() {
     setInterim('');
     setFinal('');
     setAligned(null);
+    setDsp(null);
     interimRef.current = '';
     ring.current.clear();
     recording.current = [];
@@ -342,6 +347,7 @@ export function useSession() {
       // together measured 24.6s against 2.2s for the ASR alone -- an 11x penalty from
       // contention. Awaiting each in turn keeps both at their solo speed.
       const audioForPhonetic = full.slice(0);
+      const audioForDsp = full.slice(0);
       const interimWords = interimRef.current.trim().split(/\s+/).filter(Boolean).length;
 
       // longForm: Whisper's encoder sees 30s at a time, and the refined pass gets the
@@ -379,6 +385,24 @@ export function useSession() {
             `${phoneticResult.seconds.toFixed(2)}s at ${phoneticResult.msPerFrame.toFixed(1)}ms/frame`,
         );
         log(`alignment: ${subs.length} divergences, ${flaps.length} of them /t/ -> [ɾ] flaps`);
+
+        // DSP last. It is pure CPU so it does not contend for the GPU, but running it
+        // after the model passes keeps the captions appearing as early as possible.
+        try {
+          dspClient.current ??= new DspClient();
+          const d = await dspClient.current.analyse(audioForDsp, rows, TARGET_SAMPLE_RATE);
+          setDsp(d);
+          log(
+            `dsp: ${d.vowels.length} vowels measured, ` +
+              `${d.pitch.filter((p) => p.f0 !== null).length} voiced frames, ` +
+              `${d.seconds.toFixed(2)}s` +
+              (d.rhythm
+                ? ` — ${d.rhythm.speechRate.toFixed(1)}/s speech, ${d.rhythm.articulationRate.toFixed(1)}/s articulation`
+                : ''),
+          );
+        } catch (err) {
+          log(`dsp failed (prosody unavailable): ${err}`);
+        }
       }
       setFinal(text);
       setInterim('');
@@ -396,6 +420,7 @@ export function useSession() {
     setInterim('');
     setFinal('');
     setAligned(null);
+    setDsp(null);
     interimRef.current = '';
     setStatus('finalizing');
     try {
@@ -408,6 +433,7 @@ export function useSession() {
 
       // Sequential for the same reason as stop(): the two workers contend for one GPU.
       const audioForPhonetic = audio.slice(0);
+      const audioForDsp = audio.slice(0);
       const { text, seconds } = await engine.transcribe(audio, true);
       const phoneticResult = phonetic.current
         ? await phonetic.current.transcribe(audioForPhonetic).catch((err) => {
@@ -428,6 +454,22 @@ export function useSession() {
             `${phoneticResult.seconds.toFixed(2)}s at ${phoneticResult.msPerFrame.toFixed(1)}ms/frame`,
         );
         log(`alignment: ${subs.length} divergences, ${flaps.length} of them /t/ -> [ɾ] flaps`);
+
+        // DSP last. It is pure CPU so it does not contend for the GPU, but running it
+        // after the model passes keeps the captions appearing as early as possible.
+        try {
+          dspClient.current ??= new DspClient();
+          const d = await dspClient.current.analyse(audioForDsp, rows, TARGET_SAMPLE_RATE);
+          setDsp(d);
+          log(
+            `dsp: ${d.vowels.length} vowels measured, ` +
+              `${d.pitch.filter((p) => p.f0 !== null).length} voiced frames, ` +
+              `${d.seconds.toFixed(2)}s` +
+              (d.rhythm ? ` — ${d.rhythm.speechRate.toFixed(1)}/s speech, ${d.rhythm.articulationRate.toFixed(1)}/s articulation` : ''),
+          );
+        } catch (err) {
+          log(`dsp failed (prosody unavailable): ${err}`);
+        }
       }
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
@@ -493,7 +535,7 @@ export function useSession() {
 
   return {
     status, progress, device, interim, final, level, error, diagnostics, lexicon,
-    aligned, phoneticReady, baseline,
+    aligned, phoneticReady, baseline, dsp,
     hasRecording: lastRecording.current !== null,
     load, start, stop, loadSample, exportRecording, setConfig, probeMic, runBenchmark,
   };

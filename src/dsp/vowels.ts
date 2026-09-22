@@ -10,9 +10,9 @@ import type { AlignedWord } from '../align/utterance';
  * rejection below exists because including that material demonstrably produces garbage:
  *
  *  - vowels only, by phone identity
- *  - the MIDDLE 50% of each interval, so transitions into neighbouring consonants are
- *    excluded — a formant sliding toward the next consonant is not the vowel's target
- *  - minimum duration, since a short interval has no steady state to measure
+ *  - a window CENTRED on the CTC label, grown toward the neighbours but never across
+ *    them, so transitions into neighbouring phones are excluded
+ *  - enough signal for an order-18 LPC fit
  *  - voiced only, confirmed by the pitch tracker
  *  - above an energy floor
  */
@@ -25,8 +25,21 @@ const MONOPHTHONGS = new Set([
 /** Close vowels, whose F1 the method measures poorly. Carried into the UI. */
 const CLOSE_VOWELS = new Set(['i', 'ɪ', 'u', 'ʊ']);
 
-/** Below this there is no steady state worth measuring. */
-export const MIN_VOWEL_SECONDS = 0.04;
+/**
+ * Half-width of the analysis window, centred on the phone's label frame.
+ *
+ * CTC alignments are PEAKY: the model emits a label only at its most confident frame
+ * and blanks around it, so a label's span is where the model was sure, not the phone's
+ * acoustic extent. Measured on the fixture, the median label lasts 20ms (one frame)
+ * while the median gap between labels is 80ms. Trusting label duration rejected 36 of
+ * 44 phones as "too short" on a false premise.
+ *
+ * So the window is centred on the label and grown toward the neighbours instead.
+ */
+export const WINDOW_HALF_SECONDS = 0.025;
+
+/** Below this there is not enough signal for an order-18 LPC fit to mean anything. */
+export const MIN_HALF_SECONDS = 0.012;
 
 export interface VowelMeasurement {
   phone: string;
@@ -61,17 +74,31 @@ export function extractVowels(
 ): VowelMeasurement[] {
   const out: VowelMeasurement[] = [];
 
-  for (const word of words) {
-    for (const phone of word.phonetic) {
+  // Flattened and ordered, so each phone can see its neighbours across word boundaries.
+  const flat = words
+    .flatMap((w) => w.phonetic.map((p) => ({ ...p, word: w.word })))
+    .sort((a, b) => a.start - b.start);
+
+  for (let i = 0; i < flat.length; i++) {
+    const phone = flat[i];
+    {
       if (!MONOPHTHONGS.has(phone.phone)) continue;
 
-      const duration = phone.end - phone.start;
-      if (duration < MIN_VOWEL_SECONDS) continue;
+      // Centre on the label, grow toward the neighbours but never across them.
+      const centre = (phone.start + phone.end) / 2;
+      const prevEnd = i > 0 ? flat[i - 1].end : -Infinity;
+      const nextStart = i + 1 < flat.length ? flat[i + 1].start : Infinity;
 
-      // Middle 50%: the steady state, away from the transitions at either edge.
-      const quarter = duration / 4;
-      const from = Math.floor((phone.start + quarter) * sampleRate);
-      const to = Math.ceil((phone.end - quarter) * sampleRate);
+      const half = Math.min(
+        WINDOW_HALF_SECONDS,
+        centre - prevEnd,
+        nextStart - centre,
+      );
+      if (!(half >= MIN_HALF_SECONDS)) continue;
+
+      const duration = half * 2;
+      const from = Math.floor((centre - half) * sampleRate);
+      const to = Math.ceil((centre + half) * sampleRate);
       if (from < 0 || to > audio.length || to - from < 64) continue;
 
       const frame = audio.subarray(from, to);
@@ -92,12 +119,12 @@ export function extractVowels(
       // Narrower bandwidths mean better-defined resonances.
       const meanBw = (f[0].bandwidth + f[1].bandwidth) / 2;
       const bwScore = Math.max(0, Math.min(1, 1 - meanBw / 400));
-      const durScore = Math.min(1, duration / 0.12);
+      const durScore = Math.min(1, duration / (WINDOW_HALF_SECONDS * 2));
       const confidence = Math.round(bwScore * durScore * 100) / 100;
 
       out.push({
         phone: phone.phone,
-        word: word.word,
+        word: phone.word,
         start: phone.start,
         end: phone.end,
         f1: f[0].frequency,
