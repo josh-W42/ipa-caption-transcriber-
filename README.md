@@ -6,10 +6,10 @@ last two.
 
 No audio leaves your machine. There is no server.
 
-**Status: M4 complete.** Three caption rows — English, the dictionary's `/phonemic/`
-IPA, and the `[phonetic]` IPA of what was actually said — plus segmental analysis of the
-divergences: named phonological processes, an IPA chart shaded by use, comparison against
-conversational English, and a confusion matrix. Prosody and formants arrive in M5.
+**Status: M5 complete.** Three caption rows — English, the dictionary's `/phonemic/`
+IPA, and the `[phonetic]` IPA of what was actually said — plus segmental analysis
+(phonological processes, IPA chart, confusion matrix, baseline comparison) and the
+suprasegmental layer: vowel formants in the F1×F2 space, pitch contour, and rhythm.
 
 ## Why two transcription tracks
 
@@ -39,7 +39,7 @@ mic -> AudioWorklet (16kHz mono) -> ring buffer
          +--> Phoneme worker  : wav2vec2 CTC      -> phones + timings [M3]
          |      + feature-weighted alignment -> divergences            [M3]
          |      + processes, IPA chart, confusion matrix                [M4]
-         +--> DSP worker      : LPC formants, YIN pitch              [M5]
+         +--> DSP worker      : LPC formants, YIN pitch, rhythm      [M5]
                                        |
                               alignment + analysis
                                        |
@@ -141,6 +141,39 @@ MIT — see [`public/BASELINE-LICENSE.txt`](public/BASELINE-LICENSE.txt)), cover
 tokens over 41 phones. Divergence from it is description, not error: a different dialect
 diverges more and is not worse.
 
+## The DSP, and how far to trust it
+
+Every routine is verified against **synthesised signals whose answer is known in
+advance** — an impulse train through resonators placed at chosen frequencies. A formant
+tracker checked only against real speech can be confidently wrong with nothing to catch
+it; checked against resonators we placed ourselves, it either recovers them or it does
+not.
+
+Measured accuracy:
+
+| measurement | error |
+| --- | --- |
+| F2, F3 | under 1.5% |
+| F1, open vowels (/ɑ/, /æ/) | under 5% |
+| **F1, close vowels (/i/, /u/)** | **5–32%** |
+| pitch, 85–300 Hz | under 3% |
+
+The close-vowel figure is a property of the method, not a bug to fix: a close vowel's F1
+is low enough to sit among the voicing harmonics, and LPC cannot cleanly separate them.
+**So the plot shows it** — close vowels get a hollow marker and a vertical whisker, the
+whisker vertical because F1 is the axis in doubt.
+
+Other constraints the plot obeys:
+
+- **Every token is its own point.** One dot per vowel category would claim a precision
+  the method does not have.
+- **No dispersion ellipse below three tokens.** Drawing one through two points implies a
+  distribution that was never observed.
+- **Pitch contours break at unvoiced stretches** rather than interpolating. A smooth line
+  through a voiceless stop is an invention.
+- **Speech rate and articulation rate are reported separately**, because they differ by
+  exactly how much the speaker paused, and one number hides that.
+
 ## Notable engineering decisions
 
 **The phoneme model is loaded with `AutoModelForCTC`, not `pipeline()`.** The ONNX repos
@@ -179,6 +212,12 @@ parse, so it cannot drift from the pronunciations the app actually uses. The bui
 refuses to write below 90% token coverage rather than shipping a baseline that has
 quietly stopped being representative.
 
+**The vowel analysis window is centred on the CTC label, not taken from its span.** CTC
+alignments are peaky — the model emits a label at its most confident frame and blanks
+around it, so on the fixture the median label lasts 20 ms while the median gap between
+labels is 80 ms. Trusting label duration rejected 36 of 44 phones as "too short" and
+measured zero vowels.
+
 **No cross-origin isolation.** WebGPU does not require it, so there are no COOP/COEP
 headers and no `SharedArrayBuffer`. Workers exchange transferable `ArrayBuffer`s.
 
@@ -207,3 +246,4 @@ build — so offloading it would make the whole app depend on a third party's up
 - [M2 plan](docs/plans/2026-09-21-m2-phonemic-track.md)
 - [M3 plan](docs/plans/2026-09-21-m3-phonetic-track.md)
 - [M4 plan](docs/plans/2026-09-21-m4-segmental-analysis.md)
+- [M5 plan](docs/plans/2026-09-21-m5-dsp-analysis.md)
